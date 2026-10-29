@@ -1,0 +1,13 @@
+<soapenv:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:encoded">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <urn:GetBooking soapenv:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+         <Credential xsi:type="urn:Credentials">
+            <SystemID xsi:type="xsd:int">?</SystemID>
+            <Username xsi:type="xsd:string">?</Username>
+            <Password xsi:type="xsd:string">?</Password>
+         </Credential>
+         <Code xsi:type="xsd:string">?</Code>
+      </urn:GetBooking>
+   </soapenv:Body>
+</soapenv:Envelope>

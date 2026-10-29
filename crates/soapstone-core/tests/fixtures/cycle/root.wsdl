@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                  targetNamespace="urn:root">
+  <wsdl:types>
+    <xs:schema targetNamespace="urn:root">
+      <xs:import namespace="urn:a" schemaLocation="a.xsd"/>
+    </xs:schema>
+  </wsdl:types>
+</wsdl:definitions>

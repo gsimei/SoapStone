@@ -1,0 +1,18 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:features" xmlns:urn1="urn:common">
+   <soapenv:Header>
+      <urn:Auth>
+         <urn:token>?</urn:token>
+      </urn:Auth>
+   </soapenv:Header>
+   <soapenv:Body>
+      <urn:GetPerson>
+         <urn:id>?</urn:id>
+         <!--Optional:-->
+         <urn:filter>
+            <!--You have a CHOICE of the next 2 items at this level-->
+            <urn1:email>?</urn1:email>
+            <urn1:phone>?</urn1:phone>
+         </urn:filter>
+      </urn:GetPerson>
+   </soapenv:Body>
+</soapenv:Envelope>

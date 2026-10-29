@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/soapstone-core"]
+resolver = "3"

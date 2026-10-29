@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                  targetNamespace="urn:broken">
+  <wsdl:types>
+    <xs:schema targetNamespace="urn:broken">
+      <xs:import namespace="urn:missing" schemaLocation="missing.xsd"/>
+    </xs:schema>
+  </wsdl:types>
+</wsdl:definitions>

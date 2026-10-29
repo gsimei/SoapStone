@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:c="urn:common"
+           targetNamespace="urn:common"
+           elementFormDefault="qualified">
+
+  <xs:include schemaLocation="parts/address.xsd"/>
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/>
+
+  <xs:element name="note" type="xs:string"/>
+
+  <xs:group name="Meta">
+    <xs:sequence>
+      <xs:element name="createdBy" type="xs:string"/>
+    </xs:sequence>
+  </xs:group>
+
+  <xs:attributeGroup name="Audit">
+    <xs:attribute name="version" type="xs:int"/>
+    <xs:attribute ref="xml:lang"/>
+  </xs:attributeGroup>
+
+  <xs:simpleType name="Code">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="A"/>
+      <xs:enumeration value="B"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:complexType name="Person">
+    <xs:sequence>
+      <xs:element name="name" type="xs:string"/>
+      <xs:element name="age" type="xs:int" minOccurs="0" default="30"/>
+      <xs:element name="nickname" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="address" type="c:Address"/>
+      <xs:element name="photo" type="xs:base64Binary" minOccurs="0"/>
+      <xs:element ref="c:note" minOccurs="0"/>
+      <xs:group ref="c:Meta"/>
+    </xs:sequence>
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attributeGroup ref="c:Audit"/>
+  </xs:complexType>
+
+  <xs:complexType name="Contact">
+    <xs:choice>
+      <xs:element name="email" type="xs:string"/>
+      <xs:element name="phone" type="xs:string"/>
+    </xs:choice>
+  </xs:complexType>
+
+  <xs:complexType name="Flags">
+    <xs:all>
+      <xs:element name="a" type="xs:boolean"/>
+      <xs:element name="b" type="xs:boolean"/>
+    </xs:all>
+  </xs:complexType>
+
+  <xs:complexType name="Extra">
+    <xs:sequence>
+      <xs:any processContents="lax"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Employee">
+    <xs:complexContent>
+      <xs:extension base="c:Person">
+        <xs:sequence>
+          <xs:element name="employeeId" type="xs:string"/>
+          <xs:element name="code" type="c:Code"/>
+          <xs:element name="flags" type="c:Flags" minOccurs="0"/>
+          <xs:element name="extra" type="c:Extra" minOccurs="0"/>
+          <xs:element name="manager" type="c:Employee" minOccurs="0"/>
+        </xs:sequence>
+      </xs:extension>
+    </xs:complexContent>
+  </xs:complexType>
+</xs:schema>

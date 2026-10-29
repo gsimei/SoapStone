@@ -1,0 +1,12 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:rpc">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <urn:Echo>
+         <text>?</text>
+         <count>?</count>
+         <item>
+            <name>?</name>
+         </item>
+      </urn:Echo>
+   </soapenv:Body>
+</soapenv:Envelope>

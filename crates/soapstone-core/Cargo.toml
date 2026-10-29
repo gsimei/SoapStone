@@ -1,0 +1,13 @@
+[package]
+name = "soapstone-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+description = "Loads WSDLs and builds SOAP sample requests for the Soapstone client"
+
+[dependencies]
+roxmltree = "0.21"
+url = "2"
+reqwest = { version = "0.13", features = ["blocking"] }
+thiserror = "2"

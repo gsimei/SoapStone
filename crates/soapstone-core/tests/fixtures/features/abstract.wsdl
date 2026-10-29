@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- tns and c are declared only here: the inline schema below relies on them. -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+                  xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                  xmlns:tns="urn:features"
+                  xmlns:c="urn:common"
+                  targetNamespace="urn:features">
+
+  <wsdl:types>
+    <xs:schema targetNamespace="urn:features" elementFormDefault="qualified">
+      <xs:import namespace="urn:common" schemaLocation="xsd/common.xsd"/>
+
+      <xs:element name="GetPerson">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="id" type="xs:int"/>
+            <xs:element name="filter" type="c:Contact" minOccurs="0"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+
+      <xs:element name="GetPersonResponse">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="person" type="c:Person"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+
+      <xs:element name="SaveEmployee">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="employee" type="c:Employee"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+
+      <xs:element name="Auth">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="token" type="xs:string"/>
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
+    </xs:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetPersonIn">
+    <wsdl:part name="parameters" element="tns:GetPerson"/>
+  </wsdl:message>
+  <wsdl:message name="GetPersonOut">
+    <wsdl:part name="parameters" element="tns:GetPersonResponse"/>
+  </wsdl:message>
+  <wsdl:message name="AuthHeader">
+    <wsdl:part name="auth" element="tns:Auth"/>
+  </wsdl:message>
+  <wsdl:message name="SaveEmployeeIn">
+    <wsdl:part name="parameters" element="tns:SaveEmployee"/>
+    <wsdl:part name="auth" element="tns:Auth"/>
+  </wsdl:message>
+  <wsdl:message name="SaveEmployeeOut">
+    <wsdl:part name="parameters" element="tns:GetPersonResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="FeaturesPort">
+    <wsdl:operation name="GetPerson">
+      <wsdl:input message="tns:GetPersonIn"/>
+      <wsdl:output message="tns:GetPersonOut"/>
+    </wsdl:operation>
+    <wsdl:operation name="SaveEmployee">
+      <wsdl:input message="tns:SaveEmployeeIn"/>
+      <wsdl:output message="tns:SaveEmployeeOut"/>
+    </wsdl:operation>
+  </wsdl:portType>
+</wsdl:definitions>

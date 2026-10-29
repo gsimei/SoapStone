@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Invented service in the PHP/NuSOAP style: RPC/encoded, SOAP arrays, and the
+     SOAP-ENC prefix used without importing the SOAP encoding schema. -->
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+             xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+             xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/"
+             xmlns:tns="urn:encoded"
+             targetNamespace="urn:encoded">
+
+  <types>
+    <xsd:schema targetNamespace="urn:encoded">
+      <xsd:complexType name="Credentials">
+        <xsd:sequence>
+          <xsd:element name="SystemID" type="xsd:int"/>
+          <xsd:element name="Username" type="xsd:string"/>
+          <xsd:element name="Password" type="xsd:string" nillable="true"/>
+        </xsd:sequence>
+      </xsd:complexType>
+      <xsd:complexType name="Traveller">
+        <xsd:sequence>
+          <xsd:element name="Name" type="xsd:string"/>
+          <xsd:element name="BirthDate" type="xsd:date"/>
+        </xsd:sequence>
+      </xsd:complexType>
+      <xsd:complexType name="TravellerArray">
+        <xsd:complexContent>
+          <xsd:restriction base="SOAP-ENC:Array">
+            <xsd:attribute ref="SOAP-ENC:arrayType" wsdl:arrayType="tns:Traveller[]"/>
+          </xsd:restriction>
+        </xsd:complexContent>
+      </xsd:complexType>
+      <xsd:complexType name="Booking">
+        <xsd:sequence>
+          <xsd:element name="Code" type="xsd:string"/>
+          <xsd:element name="Travellers" type="tns:TravellerArray"/>
+        </xsd:sequence>
+      </xsd:complexType>
+    </xsd:schema>
+  </types>
+
+  <message name="CreateBookingRequest">
+    <part name="Credential" type="tns:Credentials"/>
+    <part name="Booking" type="tns:Booking"/>
+  </message>
+  <message name="CreateBookingResponse">
+    <part name="return" type="xsd:string"/>
+  </message>
+  <message name="GetBookingRequest">
+    <part name="Credential" type="tns:Credentials"/>
+    <part name="Code" type="xsd:string"/>
+  </message>
+  <message name="GetBookingResponse">
+    <part name="return" type="tns:Booking"/>
+  </message>
+
+  <portType name="EncodedPort">
+    <operation name="CreateBooking">
+      <input message="tns:CreateBookingRequest"/>
+      <output message="tns:CreateBookingResponse"/>
+    </operation>
+    <operation name="GetBooking">
+      <input message="tns:GetBookingRequest"/>
+      <output message="tns:GetBookingResponse"/>
+    </operation>
+  </portType>
+
+  <binding name="EncodedSoap" type="tns:EncodedPort">
+    <soap:binding style="rpc" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <operation name="CreateBooking">
+      <soap:operation soapAction="urn:encoded#CreateBooking" style="rpc"/>
+      <input>
+        <soap:body use="encoded" namespace="urn:encoded" encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" parts="Credential Booking"/>
+      </input>
+      <output>
+        <soap:body use="encoded" namespace="urn:encoded" encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"/>
+      </output>
+    </operation>
+    <operation name="GetBooking">
+      <soap:operation soapAction="urn:encoded#GetBooking" style="rpc"/>
+      <input>
+        <soap:body use="encoded" namespace="urn:encoded" encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"/>
+      </input>
+      <output>
+        <soap:body use="encoded" namespace="urn:encoded" encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"/>
+      </output>
+    </operation>
+  </binding>
+
+  <service name="Encoded">
+    <port name="EncodedSoap" binding="tns:EncodedSoap">
+      <soap:address location="http://localhost:8080/encoded"/>
+    </port>
+  </service>
+</definitions>

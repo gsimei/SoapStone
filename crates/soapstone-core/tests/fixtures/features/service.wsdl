@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+                  xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+                  xmlns:http="http://schemas.xmlsoap.org/wsdl/http/"
+                  xmlns:tns="urn:features"
+                  targetNamespace="urn:features">
+
+  <wsdl:import namespace="urn:features" location="abstract.wsdl"/>
+
+  <wsdl:binding name="FeaturesSoap" type="tns:FeaturesPort">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="GetPerson">
+      <soap:operation soapAction="urn:features/GetPerson"/>
+      <wsdl:input>
+        <soap:body use="literal"/>
+        <soap:header message="tns:AuthHeader" part="auth" use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal"/>
+      </wsdl:output>
+    </wsdl:operation>
+    <wsdl:operation name="SaveEmployee">
+      <soap:operation soapAction="urn:features/SaveEmployee"/>
+      <wsdl:input>
+        <soap:body use="literal" parts="parameters"/>
+        <soap:header message="tns:SaveEmployeeIn" part="auth" use="literal"/>
+      </wsdl:input>
+      <wsdl:output>
+        <soap:body use="literal"/>
+      </wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:binding name="FeaturesHttp" type="tns:FeaturesPort">
+    <http:binding verb="GET"/>
+    <wsdl:operation name="GetPerson">
+      <http:operation location="/GetPerson"/>
+      <wsdl:input>
+        <http:urlEncoded/>
+      </wsdl:input>
+      <wsdl:output/>
+    </wsdl:operation>
+    <wsdl:operation name="SaveEmployee">
+      <http:operation location="/SaveEmployee"/>
+      <wsdl:input>
+        <http:urlEncoded/>
+      </wsdl:input>
+      <wsdl:output/>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="Features">
+    <wsdl:port name="FeaturesSoap" binding="tns:FeaturesSoap">
+      <soap:address location="http://localhost:8080/features"/>
+    </wsdl:port>
+    <wsdl:port name="FeaturesHttp" binding="tns:FeaturesHttp">
+      <http:address location="http://localhost:8080/features-http"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

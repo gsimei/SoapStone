@@ -1,0 +1,42 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:features" xmlns:urn1="urn:common">
+   <soapenv:Header>
+      <urn:Auth>
+         <urn:token>?</urn:token>
+      </urn:Auth>
+   </soapenv:Header>
+   <soapenv:Body>
+      <urn:SaveEmployee>
+         <urn:employee id="?" version="?" xml:lang="?">
+            <urn1:name>?</urn1:name>
+            <!--Optional:-->
+            <urn1:age>30</urn1:age>
+            <!--Zero or more repetitions:-->
+            <urn1:nickname>?</urn1:nickname>
+            <urn1:address>
+               <street>?</street>
+               <city>?</city>
+               <country>?</country>
+            </urn1:address>
+            <!--Optional:-->
+            <urn1:photo>cid:133410578413</urn1:photo>
+            <!--Optional:-->
+            <urn1:note>?</urn1:note>
+            <urn1:createdBy>?</urn1:createdBy>
+            <urn1:employeeId>?</urn1:employeeId>
+            <urn1:code>?</urn1:code>
+            <!--Optional:-->
+            <urn1:flags>
+               <!--You may enter the following 2 items in any order-->
+               <urn1:a>?</urn1:a>
+               <urn1:b>?</urn1:b>
+            </urn1:flags>
+            <!--Optional:-->
+            <urn1:extra>
+               <!--You may enter ANY elements at this point-->
+            </urn1:extra>
+            <!--Optional:-->
+            <urn1:manager/>
+         </urn:employee>
+      </urn:SaveEmployee>
+   </soapenv:Body>
+</soapenv:Envelope>
