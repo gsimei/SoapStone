@@ -116,3 +116,15 @@ fn optitravel_has_the_shape_of_the_users_request() {
         assert!(xml.contains(needle), "missing {needle} in\n{xml}");
     }
 }
+
+#[test]
+fn types_from_an_xsd_brought_by_wsdl_import_are_used() {
+    let def = Definition::load(&format!("{}/tests/fixtures/wsdl_import_xsd/service.wsdl", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let xml = def.sample_request(def.operation("B", "Op").unwrap());
+    assert!(xml.contains("<urn:name>?</urn:name>"), "{xml}");
+}
+
+#[test]
+fn xml_prefixed_namespaces_match_soapui() {
+    check_fixture("xmlprefix", "service.wsdl");
+}

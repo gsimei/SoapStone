@@ -1,0 +1,9 @@
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xd="http://www.w3.org/2000/09/xmldsig#" xmlns:xs="http://example.com/XmlService">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <xd:Sign xml:lang="?">
+         <xd:value>?</xd:value>
+         <xs:Item>?</xs:Item>
+      </xd:Sign>
+   </soapenv:Body>
+</soapenv:Envelope>

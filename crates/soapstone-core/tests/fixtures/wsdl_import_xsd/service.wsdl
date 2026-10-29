@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The types come in through wsdl:import of a plain XSD, not through wsdl:types. -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+                  xmlns:tns="urn:t" targetNamespace="urn:t">
+  <wsdl:import namespace="urn:t" location="types.xsd"/>
+  <wsdl:message name="In"><wsdl:part name="p" element="tns:Op"/></wsdl:message>
+  <wsdl:portType name="P"><wsdl:operation name="Op"><wsdl:input message="tns:In"/></wsdl:operation></wsdl:portType>
+  <wsdl:binding name="B" type="tns:P">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="Op"><soap:operation soapAction="Op"/><wsdl:input><soap:body use="literal"/></wsdl:input></wsdl:operation>
+  </wsdl:binding>
+  <wsdl:service name="S"><wsdl:port name="B" binding="tns:B"><soap:address location="http://localhost/t"/></wsdl:port></wsdl:service>
+</wsdl:definitions>

@@ -132,6 +132,10 @@ impl SchemaSet {
             for schema in types.flat_map(|t| t.children()).filter(|n| is(*n, XS, "schema")) {
                 builder.schema(schema, &doc.url, None);
             }
+            // `wsdl:import` may bring a plain XSD instead of another WSDL.
+            for import in root.children().filter(|n| is(*n, WSDL_NS, "import")) {
+                builder.follow(&doc.url, import.attribute("location"), None);
+            }
         }
         builder.set
     }

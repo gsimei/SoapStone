@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Namespaces whose last segment starts with "xml": the prefix "xml" is reserved and must never be declared. -->
+<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+                  xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:prefixes"
+                  xmlns:ds="http://www.w3.org/2000/09/xmldsig#" xmlns:svc="http://example.com/XmlService"
+                  targetNamespace="urn:prefixes">
+  <wsdl:types>
+    <xs:schema targetNamespace="http://www.w3.org/2000/09/xmldsig#" elementFormDefault="qualified">
+      <xs:import namespace="http://example.com/XmlService"/>
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/>
+      <xs:element name="Sign">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="value" type="xs:string"/>
+            <xs:element ref="svc:Item"/>
+          </xs:sequence>
+          <xs:attribute ref="xml:lang"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:schema>
+    <xs:schema targetNamespace="http://example.com/XmlService" elementFormDefault="qualified">
+      <xs:element name="Item" type="xs:string"/>
+    </xs:schema>
+  </wsdl:types>
+  <wsdl:message name="In"><wsdl:part name="p" element="ds:Sign"/></wsdl:message>
+  <wsdl:portType name="P"><wsdl:operation name="Sign"><wsdl:input message="tns:In"/></wsdl:operation></wsdl:portType>
+  <wsdl:binding name="PrefixSoap" type="tns:P">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="Sign"><soap:operation soapAction="Sign"/><wsdl:input><soap:body use="literal"/></wsdl:input></wsdl:operation>
+  </wsdl:binding>
+  <wsdl:service name="S"><wsdl:port name="PrefixSoap" binding="tns:PrefixSoap"><soap:address location="http://localhost/p"/></wsdl:port></wsdl:service>
+</wsdl:definitions>

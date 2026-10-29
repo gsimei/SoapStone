@@ -59,6 +59,10 @@ pub(crate) fn suggest_prefix(ns: &str) -> String {
         .take_while(char::is_ascii_alphanumeric)
         .collect::<String>()
         .to_ascii_lowercase();
+    // Prefixes starting with "xml" are reserved; SoapUI keeps the x and the letter after it (xmldsig → xd).
+    if let Some(rest) = word.strip_prefix("xml") {
+        return rest.chars().next().map_or_else(|| "ns".into(), |c| format!("x{c}"));
+    }
     match word.len() {
         0 => "ns".into(),
         1..=4 => word,
@@ -175,6 +179,8 @@ mod tests {
             ("http://www.w3.org/2001/XMLSchema", "xsd"),
             ("http://www.w3.org/2001/XMLSchema-instance", "xsi"),
             ("http://schemas.xmlsoap.org/soap/encoding/", "soapenc"),
+            ("http://www.w3.org/2000/09/xmldsig#", "xd"),
+            ("http://example.com/XmlService", "xs"),
         ] {
             assert_eq!(super::suggest_prefix(ns), p, "{ns}");
         }

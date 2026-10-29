@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE schema PUBLIC "-//EXAMPLE//DTD Schema//EN" "schema.dtd" [
+  <!ENTITY tns 'urn:dtd'>
+]>
+<schema xmlns="http://www.w3.org/2001/XMLSchema" targetNamespace="&tns;">
+  <element name="Signed" type="string"/>
+</schema>

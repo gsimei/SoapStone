@@ -59,20 +59,7 @@ pub fn to_url(input: &str) -> Result<Url, LoadError> {
 /// The root document first, then every imported or included document in discovery order, each once.
 pub fn fetch_all(root: &Url) -> Result<Vec<Document>, LoadError> {
     let mut http = None;
-    let mut root = root.clone();
-    let mut content = fetch(&mut http, &root)?;
-    let mut scanned = scan(root.as_str(), &content);
-    // A service URL without `?wsdl` usually answers with an HTML page; ask again the way SoapUI users do.
-    if !matches!(scanned, Ok((true, _))) && root.query().is_none() && root.scheme() != "file" {
-        root.set_query(Some("wsdl"));
-        content = fetch(&mut http, &root)?;
-        scanned = scan(root.as_str(), &content);
-    }
-    let (is_wsdl, refs) = scanned?;
-    if !is_wsdl {
-        return Err(LoadError::NotWsdl { url: root.to_string() });
-    }
-
+    let (root, content, refs) = load_root(&mut http, root)?;
     let mut seen = HashSet::from([root.to_string()]);
     let mut queue = VecDeque::new();
     enqueue(&root, refs, &mut seen, &mut queue)?;
@@ -86,9 +73,46 @@ pub fn fetch_all(root: &Url) -> Result<Vec<Document>, LoadError> {
     Ok(docs)
 }
 
+/// The root WSDL. A service URL without a query often answers with an HTML page or an error status
+/// (CXF, PHP SoapServer); then ask again with `?wsdl`, the way people type it in SoapUI. If that fails
+/// too, report the first error: it names the URL the user gave. Unreachable hosts are not retried,
+/// so a timeout is never paid twice.
+fn load_root(http: &mut Option<Client>, url: &Url) -> Result<(Url, String, Vec<String>), LoadError> {
+    let error = match fetch_bytes(http, url)?.and_then(|bytes| wsdl_root(url, &bytes)) {
+        Ok((content, refs)) => return Ok((url.clone(), content, refs)),
+        Err(e) => e,
+    };
+    if url.query().is_some() || url.scheme() == "file" {
+        return Err(error);
+    }
+    let mut retry = url.clone();
+    retry.set_query(Some("wsdl"));
+    match fetch_bytes(http, &retry) {
+        Ok(Ok(bytes)) => wsdl_root(&retry, &bytes).map(|(content, refs)| (retry, content, refs)).map_err(|_| error),
+        _ => Err(error),
+    }
+}
+
+/// The text and references of a WSDL document; `NotWsdl` for any other XML.
+fn wsdl_root(url: &Url, bytes: &[u8]) -> Result<(String, Vec<String>), LoadError> {
+    let content = decode(bytes, url.as_str())?;
+    match scan(url.as_str(), &content)? {
+        (true, refs) => Ok((content, refs)),
+        (false, _) => Err(LoadError::NotWsdl { url: url.to_string() }),
+    }
+}
+
+/// Local files can be imported only by local files, and never from another machine's file share
+/// (on Windows that opens an SMB connection and sends the user's credentials).
 fn enqueue(base: &Url, refs: Vec<String>, seen: &mut HashSet<String>, queue: &mut VecDeque<Url>) -> Result<(), LoadError> {
     for location in refs {
         let url = base.join(&location).map_err(|e| fetch_err(&location, e))?;
+        if url.scheme() == "file" && base.scheme() != "file" {
+            return Err(fetch_err(url.as_str(), "a document fetched over the network cannot import a local file"));
+        }
+        if url.scheme() == "file" && url.host().is_some() {
+            return Err(fetch_err(url.as_str(), "the file is on a network share, not on this computer"));
+        }
         if seen.insert(url.to_string()) {
             queue.push_back(url);
         }
@@ -98,15 +122,19 @@ fn enqueue(base: &Url, refs: Vec<String>, seen: &mut HashSet<String>, queue: &mu
 
 /// Parses every document, failing on the first one that is not well-formed XML.
 pub(crate) fn parse_all(documents: &[Document]) -> Result<Vec<roxmltree::Document<'_>>, LoadError> {
-    documents
-        .iter()
-        .map(|d| roxmltree::Document::parse(&d.content).map_err(|e| LoadError::Xml { url: d.url.clone(), reason: e.to_string() }))
-        .collect()
+    documents.iter().map(|d| parse_xml(&d.url, &d.content)).collect()
+}
+
+/// DOCTYPEs are allowed: W3C's xmldsig/xenc schemas (imported by WS-Security) start with one.
+/// roxmltree expands internal entities only and never fetches an external DTD.
+fn parse_xml<'i>(url: &str, content: &'i str) -> Result<roxmltree::Document<'i>, LoadError> {
+    let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    roxmltree::Document::parse_with_options(content, options).map_err(|e| LoadError::Xml { url: url.to_string(), reason: e.to_string() })
 }
 
 /// Parses a document once: is its root `wsdl:definitions`, and which locations does it import or include?
 fn scan(url: &str, content: &str) -> Result<(bool, Vec<String>), LoadError> {
-    let xml = roxmltree::Document::parse(content).map_err(|e| LoadError::Xml { url: url.to_string(), reason: e.to_string() })?;
+    let xml = parse_xml(url, content)?;
     let root = xml.root_element().tag_name();
     let is_wsdl = root.namespace() == Some(WSDL_NS) && root.name() == "definitions";
     let mut refs = Vec::new();
@@ -126,10 +154,15 @@ fn scan(url: &str, content: &str) -> Result<(bool, Vec<String>), LoadError> {
 }
 
 fn fetch(http: &mut Option<Client>, url: &Url) -> Result<String, LoadError> {
-    let bytes = match url.scheme() {
+    decode(&fetch_bytes(http, url)??, url.as_str())
+}
+
+/// Outer error: the document could not be reached. Inner error: the server answered with an error status.
+fn fetch_bytes(http: &mut Option<Client>, url: &Url) -> Result<Result<Vec<u8>, LoadError>, LoadError> {
+    match url.scheme() {
         "file" => {
             let path = url.to_file_path().map_err(|()| fetch_err(url.as_str(), "not a usable file path"))?;
-            std::fs::read(path).map_err(|e| fetch_err(url.as_str(), e))?
+            Ok(Ok(std::fs::read(path).map_err(|e| fetch_err(url.as_str(), e))?))
         }
         "http" | "https" => {
             if http.is_none() {
@@ -137,13 +170,12 @@ fn fetch(http: &mut Option<Client>, url: &Url) -> Result<String, LoadError> {
             }
             let response = http.as_ref().unwrap().get(url.clone()).send().map_err(|e| fetch_err(url.as_str(), e))?;
             if !response.status().is_success() {
-                return Err(fetch_err(url.as_str(), format!("HTTP {}", response.status())));
+                return Ok(Err(fetch_err(url.as_str(), format!("HTTP {}", response.status()))));
             }
-            response.bytes().map_err(|e| fetch_err(url.as_str(), e))?.to_vec()
+            Ok(Ok(response.bytes().map_err(|e| fetch_err(url.as_str(), e))?.to_vec()))
         }
-        other => return Err(fetch_err(url.as_str(), format!("unsupported URL scheme {other}"))),
-    };
-    decode(&bytes, url.as_str())
+        other => Err(fetch_err(url.as_str(), format!("unsupported URL scheme {other}"))),
+    }
 }
 
 /// UTF-8 (BOM stripped), or Latin-1 when the XML declaration says so.
