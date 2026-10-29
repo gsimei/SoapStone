@@ -53,6 +53,18 @@ fn render(node: Node, depth: usize, out: &mut String) {
     }
 }
 
+/// Path of a fixture kept only on the developer's machine (real customer WSDLs, git-ignored).
+/// `None` when it is absent, so the calling test returns early and passes as skipped.
+pub fn local_fixture(rel: &str) -> Option<String> {
+    let path = format!("{}/tests/fixtures/{rel}", env!("CARGO_MANIFEST_DIR"));
+    if std::path::Path::new(&path).exists() {
+        Some(path)
+    } else {
+        eprintln!("skipped: local-only fixture {rel} is absent");
+        None
+    }
+}
+
 /// Tiny HTTP server on a random local port: answers each request whose target (path + query)
 /// matches a route with 200 and the body, anything else with 404. Returns the port.
 pub fn serve(routes: Vec<(&'static str, String)>) -> u16 {

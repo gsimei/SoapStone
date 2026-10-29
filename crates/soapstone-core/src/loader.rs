@@ -7,8 +7,9 @@ use std::time::Duration;
 use reqwest::blocking::Client;
 use url::Url;
 
-const WSDL_NS: &str = "http://schemas.xmlsoap.org/wsdl/";
-const XS_NS: &str = "http://www.w3.org/2001/XMLSchema";
+use crate::xsd::XS;
+
+pub(crate) const WSDL_NS: &str = "http://schemas.xmlsoap.org/wsdl/";
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Imports of these namespaces are never fetched: every SOAP tool knows them already.
@@ -95,6 +96,14 @@ fn enqueue(base: &Url, refs: Vec<String>, seen: &mut HashSet<String>, queue: &mu
     Ok(())
 }
 
+/// Parses every document, failing on the first one that is not well-formed XML.
+pub(crate) fn parse_all(documents: &[Document]) -> Result<Vec<roxmltree::Document<'_>>, LoadError> {
+    documents
+        .iter()
+        .map(|d| roxmltree::Document::parse(&d.content).map_err(|e| LoadError::Xml { url: d.url.clone(), reason: e.to_string() }))
+        .collect()
+}
+
 /// Parses a document once: is its root `wsdl:definitions`, and which locations does it import or include?
 fn scan(url: &str, content: &str) -> Result<(bool, Vec<String>), LoadError> {
     let xml = roxmltree::Document::parse(content).map_err(|e| LoadError::Xml { url: url.to_string(), reason: e.to_string() })?;
@@ -105,8 +114,8 @@ fn scan(url: &str, content: &str) -> Result<(bool, Vec<String>), LoadError> {
         let tag = node.tag_name();
         let location = match (tag.namespace(), tag.name()) {
             (Some(WSDL_NS), "import") => node.attribute("location"),
-            (Some(XS_NS), "include") => node.attribute("schemaLocation"),
-            (Some(XS_NS), "import") if !node.attribute("namespace").is_some_and(|ns| BUILTIN_NAMESPACES.contains(&ns)) => {
+            (Some(XS), "include") => node.attribute("schemaLocation"),
+            (Some(XS), "import") if !node.attribute("namespace").is_some_and(|ns| BUILTIN_NAMESPACES.contains(&ns)) => {
                 node.attribute("schemaLocation")
             }
             _ => None,
