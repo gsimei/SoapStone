@@ -7,5 +7,5 @@ mod sample;
 mod wsdl;
 mod xsd;
 
-pub use loader::{Document, LoadError, fetch_all, to_url};
+pub use loader::{Document, FetchOptions, LoadError, fetch_all, fetch_all_with, to_url};
 pub use wsdl::{Definition, Operation, SoapVersion, Style};
