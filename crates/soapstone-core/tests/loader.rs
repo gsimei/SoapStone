@@ -1,5 +1,5 @@
 mod common;
-use soapstone_core::{LoadError, fetch_all, to_url};
+use soapstone_core::{FetchOptions, LoadError, fetch_all, fetch_all_with, to_url};
 
 fn fixture(p: &str) -> url::Url {
     to_url(&format!("{}/tests/fixtures/{p}", env!("CARGO_MANIFEST_DIR"))).unwrap()
@@ -83,4 +83,37 @@ fn schemas_with_a_doctype_load() {
     let docs = fetch_all(&fixture("dtd/root.wsdl")).unwrap();
     assert_eq!(docs.len(), 2);
     assert!(soapstone_core::Definition::parse(docs).is_ok());
+}
+
+#[test]
+fn basic_credentials_go_only_to_the_wsdl_origin() {
+    let schema = r#"<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:t"/>"#;
+    let (b, b_heads) = common::serve_recording(vec![("/t.xsd", schema.into())]);
+    let wsdl = format!(
+        r#"<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:a">
+             <wsdl:types><xsd:schema targetNamespace="urn:a"><xsd:import namespace="urn:t" schemaLocation="http://127.0.0.1:{b}/t.xsd"/></xsd:schema></wsdl:types>
+           </wsdl:definitions>"#
+    );
+    let (a, a_heads) = common::serve_recording(vec![("/svc?wsdl", wsdl)]);
+    let options = FetchOptions { username: "u".into(), password: "p".into(), ..Default::default() };
+    let docs = fetch_all_with(&url::Url::parse(&format!("http://127.0.0.1:{a}/svc")).unwrap(), &options).unwrap();
+    assert_eq!(docs.len(), 2);
+    let a_heads = a_heads.lock().unwrap();
+    assert_eq!(a_heads.len(), 2, "the bare /svc attempt and the ?wsdl retry");
+    for head in a_heads.iter() {
+        assert!(head.to_lowercase().contains("authorization: basic dtpw"), "{head}");
+    }
+    let b_heads = b_heads.lock().unwrap();
+    assert_eq!(b_heads.len(), 1);
+    assert!(!b_heads[0].to_lowercase().contains("authorization"), "{}", b_heads[0]);
+}
+
+#[test]
+fn untrusted_certificate_needs_insecure() {
+    let wsdl = std::fs::read_to_string(format!("{}/tests/fixtures/calculator/calculator.wsdl", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let port = common::serve_tls(wsdl);
+    let url = url::Url::parse(&format!("https://127.0.0.1:{port}/svc?wsdl")).unwrap();
+    assert!(matches!(fetch_all(&url), Err(LoadError::Fetch { .. })));
+    let docs = fetch_all_with(&url, &FetchOptions { insecure: true, ..Default::default() }).unwrap();
+    assert_eq!(docs.len(), 1);
 }

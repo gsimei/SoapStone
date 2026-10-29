@@ -1,3 +1,6 @@
 /target
 # Real customer WSDLs: kept on the developer's machine only (tests skip them when absent)
 /crates/soapstone-core/tests/fixtures/optitravel/
+/app/node_modules
+/app/dist
+/app/src-tauri/gen/schemas
