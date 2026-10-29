@@ -187,3 +187,103 @@ fn users_real_projects_import() {
         assert_eq!(report.services, 1);
     }
 }
+
+#[test]
+fn interfaces_of_one_wsdl_become_one_service() {
+    // Review 1d #1: SoapUI makes one interface per binding of a .NET WSDL (…Soap and …Soap12).
+    let mut project = parse_soapui(&fixture()).unwrap();
+    let mut soap12 = project.interfaces[0].clone();
+    (soap12.name, soap12.binding) = ("CalculatorSoap12".into(), "CalculatorSoap12".into());
+    soap12.calls.truncate(1);
+    soap12.calls[0].name = "Soap12 one".into();
+    project.interfaces.push(soap12);
+    let mut s = Store::open_in_memory().unwrap();
+    let report = s.import_soapui(project).unwrap();
+    let p = report.project_id;
+    let names = |b, o| requests_of(&s, p, b, o).into_iter().map(|(_, n)| n).collect::<Vec<_>>();
+    assert_eq!(report.services, 1);
+    assert_eq!(names("CalculatorSoap", "Add"), ["Basic one", "NTLM one"]);
+    assert_eq!(names("CalculatorSoap12", "Add"), ["Soap12 one"]);
+    assert_eq!(names("CalculatorSoap12", "Multiply"), ["Request 1"]);
+}
+
+const PING_WSDL: &str = r#"<wsdl:definitions xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:t="urn:t" targetNamespace="urn:t">
+  <wsdl:types><xs:schema><xs:import namespace="urn:t" schemaLocation="types.xsd"/></xs:schema></wsdl:types>
+  <wsdl:message name="In"><wsdl:part name="p" element="t:Ping"/></wsdl:message>
+  <wsdl:portType name="P"><wsdl:operation name="Ping"><wsdl:input message="t:In"/><wsdl:output message="t:In"/></wsdl:operation></wsdl:portType>
+  <wsdl:binding name="B" type="t:P"><soap:binding transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="Ping"><soap:operation soapAction="urn:ping"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+  </wsdl:binding>
+  <wsdl:service name="S"><wsdl:port name="Port" binding="t:B"><soap:address location="http://h/s"/></wsdl:port></wsdl:service>
+</wsdl:definitions>"#;
+
+const PING_XSD: &str = r#"<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:t" elementFormDefault="qualified">
+  <xs:element name="Ping"><xs:complexType><xs:sequence><xs:element name="Message" type="xs:string"/></xs:sequence></xs:complexType></xs:element>
+</xs:schema>"#;
+
+#[test]
+fn cached_parts_with_java_file_urls_resolve_their_imports() {
+    // Review 1d #2: SoapUI writes local files as "file:/C:/…" or "file:/Users/…".
+    for dir in ["file:/C:/svc", "file:/Users/me/svc"] {
+        let xml = format!(
+            r#"<con:soapui-project name="Files" xmlns:con="http://eviware.com/soapui/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <con:interface xsi:type="con:WsdlInterface" name="B" bindingName="{{urn:t}}B" definition="{dir}/s.wsdl">
+    <con:definitionCache type="TEXT" rootPart="{dir}/s.wsdl">
+      <con:part><con:url>{dir}/s.wsdl</con:url><con:content><![CDATA[{PING_WSDL}]]></con:content></con:part>
+      <con:part><con:url>{dir}/types.xsd</con:url><con:content><![CDATA[{PING_XSD}]]></con:content></con:part>
+    </con:definitionCache>
+  </con:interface>
+</con:soapui-project>"#
+        );
+        let mut s = Store::open_in_memory().unwrap();
+        let p = s.import_soapui(parse_soapui(&xml).unwrap()).unwrap().project_id;
+        let ping = requests_of(&s, p, "B", "Ping");
+        let body = s.request(ping[0].0).unwrap().body;
+        assert!(body.contains("Message>"), "{dir}: {body}");
+    }
+}
+
+/// A project with one call on an interface without a WSDL cache.
+fn one_call(attributes: &str, credentials: &str) -> SoapuiCall {
+    let xml = format!(
+        r#"<con:soapui-project name="A" xmlns:con="http://eviware.com/soapui/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <con:interface xsi:type="con:WsdlInterface" name="I" bindingName="{{urn:t}}B" definition="http://h/s?wsdl">
+    <con:operation name="Ping"><con:call name="C" {attributes}><con:endpoint>http://h/s</con:endpoint><con:request/><con:credentials>{credentials}</con:credentials></con:call></con:operation>
+  </con:interface>
+</con:soapui-project>"#
+    );
+    parse_soapui(&xml).unwrap().interfaces[0].calls[0].clone()
+}
+
+#[test]
+fn global_http_settings_are_not_sent_as_basic_up_front() {
+    // Review 1d #3: SoapUI sends these credentials only when the server asks for them.
+    let user = "<con:username>u</con:username><con:password>p</con:password>";
+    let wss = one_call(r#"wssPasswordType="PasswordDigest""#, &format!("{user}<con:authType>Global HTTP Settings</con:authType>"));
+    assert_eq!(wss.auth, Auth::None, "the password goes only into the UsernameToken digest");
+    assert!(wss.ws_security.username_token);
+    let ntlm = one_call("", &format!("{user}<con:domain>CORP</con:domain>"));
+    assert_eq!(ntlm.auth, Auth::Ntlm { username: "u".into(), password: "p".into(), domain: "CORP".into() });
+    let preemptive = one_call(r#"wssPasswordType="PasswordText""#, &format!("{user}<con:authType>Preemptive</con:authType>"));
+    assert_eq!(preemptive.auth, Auth::Basic { username: "u".into(), password: "p".into() });
+}
+
+#[test]
+fn property_values_resolve_project_references() {
+    // Review 1d #4: a property built from other properties.
+    let property = |n: &str, v: &str| format!("<con:property><con:name>{n}</con:name><con:value>{v}</con:value></con:property>");
+    let xml = format!(
+        r#"<con:soapui-project name="P" xmlns:con="http://eviware.com/soapui/config"><con:properties>{}{}{}{}{}</con:properties></con:soapui-project>"#,
+        property("base", "http://${#Project#host}:${#Project#port}"),
+        property("host", "${#Project#name}"),
+        property("name", "h"),
+        property("port", "${#Global#port}"),
+        property("loop", "${#Project#loop}"),
+    );
+    let p = parse_soapui(&xml).unwrap();
+    let value = |n: &str| p.properties.iter().find(|v| v.name == n).unwrap().value.clone();
+    assert_eq!(value("base"), "http://h:${#Global#port}");
+    assert_eq!(value("loop"), "${#Project#loop}");
+    let note = |n: &str| p.notes.iter().any(|x| x.contains(&format!("Property \"{n}\"")) && x.contains("${#"));
+    assert!(note("base") && note("port") && note("loop") && !note("host"), "{:?}", p.notes);
+}

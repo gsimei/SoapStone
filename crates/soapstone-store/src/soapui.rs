@@ -56,6 +56,10 @@ pub struct ImportReport {
     pub notes: Vec<String>,
 }
 
+fn skipped(interface: &str, reason: &str) -> String {
+    format!("Skipped interface \"{interface}\": {reason}.")
+}
+
 impl Store {
     /// A new project named after the SoapUI one, in one transaction: properties become base variables, each
     /// cached WSDL a service, and saved calls the requests of their operation (operations without calls get
@@ -70,34 +74,43 @@ impl Store {
         )?;
         let project_id = tx.last_insert_rowid();
         let (mut services, mut requests) = (0, 0);
+        // SoapUI makes one interface per binding of a WSDL (…Soap, …Soap12); they share one service.
+        let mut wsdls: Vec<(Vec<Document>, Vec<SoapuiInterface>)> = Vec::new();
         for interface in project.interfaces {
-            let skipped = |reason: &str| format!("Skipped interface \"{}\": {reason}.", interface.name);
             if interface.documents.is_empty() {
-                notes.push(skipped("SoapUI kept no copy of its WSDL; import the WSDL by URL instead"));
+                notes.push(skipped(&interface.name, "SoapUI kept no copy of its WSDL; import the WSDL by URL instead"));
                 continue;
             }
-            let def = match Definition::parse(interface.documents.clone()) {
+            match wsdls.iter_mut().find(|(docs, _)| docs[0].url == interface.documents[0].url) {
+                Some((_, group)) => group.push(interface),
+                None => wsdls.push((interface.documents.clone(), vec![interface])),
+            }
+        }
+        for (documents, interfaces) in wsdls {
+            let def = match Definition::parse(documents) {
                 Ok(def) => def,
                 Err(e) => {
-                    notes.push(skipped(&e.to_string()));
+                    notes.extend(interfaces.iter().map(|i| skipped(&i.name, &e.to_string())));
                     continue;
                 }
             };
             let operations: Vec<_> = unique_operations(&def).collect();
-            // A call goes to its operation in the interface's binding, else to the first operation of that name
+            // A call goes to its operation in its interface's binding, else to the first operation of that name
             // (SoapUI can store a binding name without its local part).
             let mut calls: HashMap<(&str, &str), Vec<&SoapuiCall>> = HashMap::new();
-            for call in &interface.calls {
-                let target = operations
-                    .iter()
-                    .find(|o| o.binding == interface.binding && o.name == call.operation)
-                    .or_else(|| operations.iter().find(|o| o.name == call.operation));
-                match target {
-                    Some(op) => calls.entry((op.binding.as_str(), op.name.as_str())).or_default().push(call),
-                    None => notes.push(format!(
-                        "\"{} › {}\" was not imported: the WSDL has no operation \"{}\".",
-                        call.operation, call.name, call.operation
-                    )),
+            for interface in &interfaces {
+                for call in &interface.calls {
+                    let target = operations
+                        .iter()
+                        .find(|o| o.binding == interface.binding && o.name == call.operation)
+                        .or_else(|| operations.iter().find(|o| o.name == call.operation));
+                    match target {
+                        Some(op) => calls.entry((op.binding.as_str(), op.name.as_str())).or_default().push(call),
+                        None => notes.push(format!(
+                            "\"{} › {}\" was not imported: the WSDL has no operation \"{}\".",
+                            call.operation, call.name, call.operation
+                        )),
+                    }
                 }
             }
             let service_id = insert_service(&tx, project_id, &def, &FetchSettings::default())?;
@@ -152,6 +165,21 @@ pub fn parse_soapui(xml: &str) -> std::result::Result<SoapuiProject, String> {
             notes.push(format!("Property \"{name}\" was not imported: variable names use letters, digits, _, . and -."));
         }
     }
+    // A property can be built from others: resolve them now, since {{variables}} inside values are not rendered.
+    // ponytail: one level per round, as many rounds as properties; a cycle is left as written.
+    for _ in 0..properties.len() {
+        let values: HashMap<String, String> = properties.iter().map(|v| (v.name.clone(), v.value.clone())).collect();
+        for v in &mut properties {
+            v.value = replace(&v.value, &mut Vec::new(), |name| values.get(name).cloned());
+        }
+    }
+    for v in &properties {
+        let mut unresolved = Vec::new();
+        replace(&v.value, &mut unresolved, |_| None);
+        if !unresolved.is_empty() {
+            notes.push(format!("Property \"{}\" keeps SoapUI expressions Soapstone cannot resolve: {}", v.name, unresolved.join(", ")));
+        }
+    }
     let names: HashSet<String> = properties.iter().map(|v| v.name.clone()).collect();
 
     let mut interfaces = Vec::new();
@@ -171,7 +199,7 @@ pub fn parse_soapui(xml: &str) -> std::result::Result<SoapuiProject, String> {
                 calls.push(call(operation, c, &names, &mut notes));
             }
         }
-        let definition = i.attribute("definition").unwrap_or("").to_string();
+        let definition = normalized(i.attribute("definition").unwrap_or(""));
         interfaces.push(SoapuiInterface { name, binding, definition, documents: cache(xml, i), calls });
     }
 
@@ -204,20 +232,24 @@ fn call(operation: &str, c: Node, properties: &HashSet<String>, notes: &mut Vec<
     let field = |n: &'static str| text(credentials.and_then(|cr| child(cr, n)));
     let (username, password, domain) = (x(field("username")), x(field("password")), x(field("domain")));
 
+    let wss_type = c.attribute("wssPasswordType").unwrap_or("");
     let auth_type = field("authType");
+    // "Global HTTP Settings" (or no type) answers the server's challenge: NTLM when there is a domain, else Basic;
+    // with a WS-Security password type the credentials are the UsernameToken's, sent only there.
     let auth = match auth_type.as_str() {
-        "NTLM" if !username.is_empty() => Auth::Ntlm { username: username.clone(), password: password.clone(), domain },
-        "Basic" | "Preemptive" | "Global HTTP Settings" | "" if !username.is_empty() => {
-            Auth::Basic { username: username.clone(), password: password.clone() }
-        }
-        "Basic" | "Preemptive" | "Global HTTP Settings" | "" | "NTLM" | "No Authorization" => Auth::None,
+        "Basic" | "Preemptive" | "Global HTTP Settings" | "" | "NTLM" if username.is_empty() => Auth::None,
+        "NTLM" => Auth::Ntlm { username: username.clone(), password: password.clone(), domain },
+        "Global HTTP Settings" | "" if !wss_type.is_empty() => Auth::None,
+        "Global HTTP Settings" | "" if !domain.is_empty() => Auth::Ntlm { username: username.clone(), password: password.clone(), domain },
+        "Basic" | "Preemptive" | "Global HTTP Settings" | "" => Auth::Basic { username: username.clone(), password: password.clone() },
+        "No Authorization" => Auth::None,
         other => {
             notes.push(format!("{label}: {other} authentication is not supported; imported without it."));
             Auth::None
         }
     };
 
-    let password_type = match c.attribute("wssPasswordType").unwrap_or("") {
+    let password_type = match wss_type {
         "" => None,
         "PasswordText" => Some(PasswordType::Text),
         "PasswordDigest" => Some(PasswordType::Digest),
@@ -238,17 +270,23 @@ fn call(operation: &str, c: Node, properties: &HashSet<String>, notes: &mut Vec<
 }
 
 /// `${#Project#name}` of a known property becomes `{{name}}`; any other `${…}` stays and is collected.
-// ponytail: an expression ends at its first `}`; nested Groovy (`${= ... {…} }`) is reported cut short but left intact.
 fn expand(s: &str, properties: &HashSet<String>, unresolved: &mut Vec<String>) -> String {
+    replace(s, unresolved, |name| properties.contains(name).then(|| format!("{{{{{name}}}}}")))
+}
+
+/// Each `${#Project#name}` for which `project` gives a value is replaced by it; every other `${…}` stays and is
+/// collected once in `unresolved`.
+// ponytail: an expression ends at its first `}`; nested Groovy (`${= ... {…} }`) is reported cut short but left intact.
+fn replace(s: &str, unresolved: &mut Vec<String>, mut project: impl FnMut(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("${") {
         let Some(len) = rest[start..].find('}') else { break };
         let expression = &rest[start..start + len + 1];
         out.push_str(&rest[..start]);
-        match expression.strip_prefix("${#Project#").and_then(|e| e.strip_suffix('}')) {
-            Some(name) if properties.contains(name) => out.push_str(&format!("{{{{{name}}}}}")),
-            _ => {
+        match expression.strip_prefix("${#Project#").and_then(|e| e.strip_suffix('}')).and_then(&mut project) {
+            Some(value) => out.push_str(&value),
+            None => {
                 out.push_str(expression);
                 if !unresolved.iter().any(|u| u == expression) {
                     unresolved.push(expression.to_string());
@@ -278,7 +316,7 @@ fn request_headers(c: Node) -> Vec<(String, String)> {
 /// The cached documents, root part first. Content is CDATA text, or (older files) the document's own elements.
 fn cache(source: &str, interface: Node) -> Vec<Document> {
     let Some(cache) = child(interface, "definitionCache") else { return vec![] };
-    let root = cache.attribute("rootPart").unwrap_or("");
+    let root = normalized(cache.attribute("rootPart").unwrap_or(""));
     let mut documents: Vec<Document> = children(cache, "part")
         .map(|part| {
             let content = child(part, "content");
@@ -286,7 +324,7 @@ fn cache(source: &str, interface: Node) -> Vec<Document> {
                 Some(element) => source[element.range()].to_string(),
                 None => text(content).trim_start().to_string(),
             };
-            Document { url: text(child(part, "url")).trim().to_string(), content }
+            Document { url: normalized(text(child(part, "url")).trim()), content }
         })
         .collect();
     if let Some(i) = documents.iter().position(|d| d.url == root) {
@@ -294,6 +332,11 @@ fn cache(source: &str, interface: Node) -> Vec<Document> {
         documents.insert(0, root);
     }
     documents
+}
+
+/// SoapUI writes Java-style `file:/C:/x.wsdl`; imports between parts resolve to `file:///C:/x.wsdl`.
+fn normalized(url: &str) -> String {
+    url::Url::parse(url).map_or_else(|_| url.to_string(), String::from)
 }
 
 fn children<'a, 'i>(node: Node<'a, 'i>, name: &'static str) -> impl Iterator<Item = Node<'a, 'i>> {

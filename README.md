@@ -31,9 +31,9 @@ Phase 1d. What works today:
 Download the installer for your system from [GitHub Releases](https://github.com/gsimei/SoapUI-RE/releases). The
 builds are not signed, so each system asks once before opening them:
 
-- **macOS:** open the `.dmg` (`aarch64` for Apple Silicon, `x64` for Intel) and drag Soapstone to Applications. The
-  first time, right-click Soapstone → Open → Open. Or run
-  `xattr -dr com.apple.quarantine /Applications/Soapstone.app`.
+- **macOS:** open the `.dmg` (`aarch64` for Apple Silicon, `x64` for Intel) and drag Soapstone to Applications. Open
+  it once; when macOS refuses, go to System Settings → Privacy & Security and click "Open Anyway". If macOS says the
+  app is damaged, run `xattr -dr com.apple.quarantine /Applications/Soapstone.app`.
 - **Windows:** run the `.msi` or the `-setup.exe`. If SmartScreen appears, choose "More info" → "Run anyway".
 - **Linux:** `sudo apt install ./Soapstone_*.deb`, or `chmod +x Soapstone_*.AppImage` and run the AppImage.
 
