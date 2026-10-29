@@ -1,7 +1,9 @@
 //! Soapstone core: load a WSDL with everything it imports and build SOAP sample requests.
 
+mod envelope;
 mod loader;
 mod qname;
+mod sample;
 mod wsdl;
 mod xsd;
 

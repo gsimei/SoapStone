@@ -1,17 +1,16 @@
 //! XML Schema: an owned model of the elements, types and groups a WSDL's messages refer to.
-// ponytail: allow(dead_code) until the sample builder (Task 6) reads the model.
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 
 use roxmltree::Node;
 use url::Url;
 
-use crate::loader::{Document, LoadError, WSDL_NS, parse_all};
+use crate::loader::{Document, WSDL_NS};
 use crate::qname::{QName, is, resolve};
 
 pub(crate) const XS: &str = "http://www.w3.org/2001/XMLSchema";
 pub(crate) const SOAP_ENC: &str = "http://schemas.xmlsoap.org/soap/encoding/";
+pub(crate) const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";
 
 #[derive(Debug, Default)]
 pub(crate) struct SchemaSet {
@@ -45,15 +44,13 @@ pub(crate) enum TypeDef {
 
 #[derive(Debug)]
 pub(crate) struct SimpleType {
-    pub name: Option<QName>,
     /// Restriction base, list item type or first union member.
     pub base: Option<QName>,
 }
 
+// ponytail: `mixed` is not modelled; samples never put text between child elements anyway.
 #[derive(Debug)]
 pub(crate) struct ComplexType {
-    pub name: Option<QName>,
-    pub mixed: bool,
     pub derivation: Derivation,
     pub content: Content,
     pub attributes: Vec<AttrItem>,
@@ -109,13 +106,13 @@ pub(crate) enum AttrItem {
 #[derive(Debug)]
 pub(crate) struct Attribute {
     pub name: QName,
-    pub ty: TypeRef,
     pub default: Option<String>,
 }
 
 impl SchemaSet {
-    pub fn build(documents: &[Document]) -> Result<SchemaSet, LoadError> {
-        Ok(Self::from_parsed(documents, &parse_all(documents)?))
+    #[cfg(test)]
+    pub fn build(documents: &[Document]) -> Result<SchemaSet, crate::LoadError> {
+        Ok(Self::from_parsed(documents, &crate::loader::parse_all(documents)?))
     }
 
     /// Starts at each `xs:schema` inside `wsdl:types` and follows imports/includes among `documents`
@@ -166,10 +163,10 @@ impl<'a, 'i> Builder<'a, 'i> {
                     self.set.elements.entry(name).or_insert_with(|| ctx.element(child, true));
                 }
                 "complexType" => {
-                    self.set.types.entry(name.clone()).or_insert_with(|| TypeDef::Complex(ctx.complex(child, Some(name))));
+                    self.set.types.entry(name).or_insert_with(|| TypeDef::Complex(ctx.complex(child)));
                 }
                 "simpleType" => {
-                    self.set.types.entry(name.clone()).or_insert_with(|| TypeDef::Simple(ctx.simple(child, Some(name))));
+                    self.set.types.entry(name).or_insert_with(|| TypeDef::Simple(ctx.simple(child)));
                 }
                 "group" => {
                     if let Some(p) = xs_children(child).find_map(|c| ctx.particle(c)) {
@@ -246,7 +243,6 @@ impl Ctx {
     fn attribute(&self, node: Node, global: bool) -> Attribute {
         Attribute {
             name: if global { self.global(node) } else { self.local(node, self.attributes_qualified) },
-            ty: self.type_ref(node),
             default: default_value(node),
         }
     }
@@ -257,15 +253,15 @@ impl Ctx {
         }
         for child in xs_children(node) {
             match child.tag_name().name() {
-                "complexType" => return TypeRef::Inline(Box::new(TypeDef::Complex(self.complex(child, None)))),
-                "simpleType" => return TypeRef::Inline(Box::new(TypeDef::Simple(self.simple(child, None)))),
+                "complexType" => return TypeRef::Inline(Box::new(TypeDef::Complex(self.complex(child)))),
+                "simpleType" => return TypeRef::Inline(Box::new(TypeDef::Simple(self.simple(child)))),
                 _ => {}
             }
         }
         TypeRef::AnyType
     }
 
-    fn simple(&self, node: Node, name: Option<QName>) -> SimpleType {
+    fn simple(&self, node: Node) -> SimpleType {
         let base = xs_children(node).find_map(|c| {
             let value = match c.tag_name().name() {
                 "restriction" => c.attribute("base"),
@@ -275,21 +271,14 @@ impl Ctx {
             };
             value.map(|v| self.qname(c, v))
         });
-        SimpleType { name, base }
+        SimpleType { base }
     }
 
-    fn complex(&self, node: Node, name: Option<QName>) -> ComplexType {
-        let mut t = ComplexType {
-            name,
-            mixed: node.attribute("mixed") == Some("true"),
-            derivation: Derivation::None,
-            content: Content::Empty,
-            attributes: Vec::new(),
-        };
+    fn complex(&self, node: Node) -> ComplexType {
+        let mut t = ComplexType { derivation: Derivation::None, content: Content::Empty, attributes: Vec::new() };
         // Particle and attributes live on the complexType itself, or on its extension/restriction.
         let mut body = node;
         for content in xs_children(node).filter(|c| matches!(c.tag_name().name(), "complexContent" | "simpleContent")) {
-            t.mixed |= content.attribute("mixed") == Some("true");
             let Some(d) = xs_children(content).find(|c| matches!(c.tag_name().name(), "extension" | "restriction")) else { continue };
             let base = self.qname(d, d.attribute("base").unwrap_or(""));
             t.derivation = if d.tag_name().name() == "extension" { Derivation::Extension(base) } else { Derivation::Restriction(base) };
@@ -298,10 +287,10 @@ impl Ctx {
             }
             body = d;
         }
-        if !matches!(t.content, Content::Simple) {
-            if let Some(p) = xs_children(body).find_map(|c| self.particle(c)) {
-                t.content = Content::Particle(p);
-            }
+        if !matches!(t.content, Content::Simple)
+            && let Some(p) = xs_children(body).find_map(|c| self.particle(c))
+        {
+            t.content = Content::Particle(p);
         }
         t.attributes = self.attr_items(body);
         t

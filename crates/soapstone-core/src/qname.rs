@@ -12,8 +12,13 @@ pub(crate) fn is(node: roxmltree::Node, ns: &str, name: &str) -> bool {
 }
 
 /// "p:local" or "local" resolved against `node` (inherits ancestors' xmlns). Unknown prefix → ns "".
+/// The `xml` prefix is bound by the XML spec itself, so it never needs a declaration.
 pub(crate) fn resolve(node: roxmltree::Node, value: &str) -> QName {
     let value = value.trim();
     let (prefix, local) = value.split_once(':').map_or((None, value), |(p, l)| (Some(p), l));
-    QName { ns: node.lookup_namespace_uri(prefix).unwrap_or("").to_string(), local: local.to_string() }
+    let ns = match prefix {
+        Some("xml") => "http://www.w3.org/XML/1998/namespace",
+        _ => node.lookup_namespace_uri(prefix).unwrap_or(""),
+    };
+    QName { ns: ns.to_string(), local: local.to_string() }
 }

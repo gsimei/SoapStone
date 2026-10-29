@@ -35,30 +35,25 @@ pub struct Operation {
     pub soap_action: Option<String>,
     /// `soap:address` of the first port using this binding.
     pub endpoint: Option<String>,
-    #[allow(dead_code)]
     pub(crate) input: InputSpec,
 }
 
-// ponytail: allow(dead_code) until the sample builder (Task 6) reads these.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct InputSpec {
     /// Message parts filtered by `soap:body@parts` (all when absent), in message order.
     pub body_parts: Vec<Part>,
     /// One per `soap:header`, in binding order.
     pub header_parts: Vec<Part>,
-    /// `soap:body@namespace` (the RPC wrapper's namespace).
-    pub rpc_namespace: Option<String>,
+    /// The RPC wrapper's namespace: `soap:body@namespace`, else the binding's targetNamespace.
+    pub rpc_namespace: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct Part {
     pub name: String,
     pub kind: PartKind,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum PartKind {
     Element(QName),
@@ -68,7 +63,6 @@ pub(crate) enum PartKind {
 pub struct Definition {
     documents: Vec<Document>,
     operations: Vec<Operation>,
-    #[allow(dead_code)]
     schemas: SchemaSet,
 }
 
@@ -101,6 +95,11 @@ impl Definition {
 
     pub fn operation(&self, binding: &str, name: &str) -> Option<&Operation> {
         self.operations.iter().find(|o| o.binding == binding && o.name == name)
+    }
+
+    /// The request SoapUI would generate for `op`: an envelope with `?` placeholders and guidance comments.
+    pub fn sample_request(&self, op: &Operation) -> String {
+        crate::envelope::sample_request(&self.schemas, op)
     }
 }
 
@@ -158,7 +157,8 @@ fn collect_operations(definitions: &[Node]) -> Vec<Operation> {
             let Some(soap_binding) = binding.children().find(|n| is_soap(*n, "binding")) else { continue };
             let soap_version = if is(soap_binding, SOAP12_NS, "binding") { SoapVersion::V12 } else { SoapVersion::V11 };
             let port_type = binding.attribute("type").and_then(|t| port_types.get(&resolve(binding, t)));
-            let endpoint = endpoints.get(&named(def, binding)).cloned();
+            let binding_name = named(def, binding);
+            let endpoint = endpoints.get(&binding_name).cloned();
             for op in wsdl_children(binding, "operation") {
                 let Some(input) = wsdl_children(op, "input").next() else { continue };
                 let name = op.attribute("name").unwrap_or("");
@@ -195,7 +195,7 @@ fn collect_operations(definitions: &[Node]) -> Vec<Operation> {
                     input: InputSpec {
                         body_parts,
                         header_parts,
-                        rpc_namespace: body.and_then(|b| b.attribute("namespace")).map(str::to_string),
+                        rpc_namespace: body.and_then(|b| b.attribute("namespace")).map_or_else(|| binding_name.ns.clone(), str::to_string),
                     },
                 });
             }
@@ -228,6 +228,6 @@ mod tests {
         let d = load("rpc_encoded/service.wsdl");
         let op = d.operation("EncodedSoap", "CreateBooking").unwrap();
         assert_eq!(names(&op.input.body_parts), ["Credential", "Booking"]);
-        assert_eq!(op.input.rpc_namespace.as_deref(), Some("urn:encoded"));
+        assert_eq!(op.input.rpc_namespace, "urn:encoded");
     }
 }
