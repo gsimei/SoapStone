@@ -30,3 +30,5 @@ jobs:
       - run: npm --prefix app run build
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Offline release performance budget
+        run: cargo run --release -p soapstone-store --example performance -- --check

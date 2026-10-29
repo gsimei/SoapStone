@@ -2,7 +2,18 @@
 import type { Environment, Environments, ImportReport, ServiceNode, Variable } from "./api";
 
 /** `{{name}}` with optional spaces inside the braces; the same grammar as the Rust renderer. */
-export const VARIABLE_RE = /\{\{\s*([A-Za-z_][\w.-]*)\s*\}\}/g;
+export const VARIABLE_RE = /\{\{ *([A-Za-z_][\w.-]*) *(?:\|raw *)?\}\}/g;
+
+export type VariableInfo = Variable & { source: string };
+export function variableInfo(envs: Environments): VariableInfo[] {
+  const vars = new Map<string, VariableInfo>();
+  for (const v of envs.base) if (v.name.trim()) vars.set(v.name.trim(), { ...v, name: v.name.trim(), source: "Base variables" });
+  const active = envs.environments.find((e) => e.name === envs.active);
+  for (const v of active?.variables ?? []) if (v.name.trim()) vars.set(v.name.trim(), { ...v, name: v.name.trim(), source: active!.name });
+  return [...vars.values()];
+}
+
+export const validVariableName = (name: string) => /^[A-Za-z_][\w.-]*$/.test(name);
 
 /** Base variables plus the active environment's, non-empty names only. */
 export function definedVariables(envs: Environments): Set<string> {
@@ -23,7 +34,7 @@ export function filterTree(tree: ServiceNode[], query: string): ServiceNode[] {
   return tree
     .map((s) => ({
       ...s,
-      operations: s.operations.filter((o) => matches(`${s.name} ${o.name} ${o.requests.map((r) => r.name).join(" ")}`, query)),
+      operations: s.operations.filter((o) => matches(`${s.name} ${o.binding} ${o.bindingNamespace ?? ""} ${o.name} ${o.requests.map((r) => r.name).join(" ")}`, query)),
     }))
     .filter((s) => s.operations.length > 0);
 }
@@ -32,7 +43,11 @@ export type QuickItem = { requestId: number; label: string };
 
 export function quickOpenItems(tree: ServiceNode[]): QuickItem[] {
   return tree.flatMap((s) =>
-    s.operations.flatMap((o) => o.requests.map((r) => ({ requestId: r.id, label: `${s.name} › ${o.name} › ${r.name}` }))),
+    s.operations.flatMap((o) => {
+      const ambiguous = s.operations.some((other) => other.id !== o.id && other.name === o.name);
+      const binding = ambiguous ? `{${o.bindingNamespace ?? ""}}${o.binding} › ` : "";
+      return o.requests.map((r) => ({ requestId: r.id, label: `${s.name} › ${binding}${o.name} › ${r.name}` }));
+    }),
   );
 }
 

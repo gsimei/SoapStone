@@ -4,12 +4,15 @@ use std::collections::HashMap;
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, HeaderValue};
 use reqwest::{Client, ClientBuilder, Identity, Request, Response, StatusCode, Url};
 
-use crate::{Auth, Header, HttpResponse, SendError, SoapCall, SoapVersion, WsSecurity, decode_body, fault_string, ntlm, pretty_xml, render, wss};
+use crate::{
+    Auth, Header, HttpResponse, SendError, SoapCall, SoapVersion, WsSecurity, decode_body, fault_string, ntlm, pretty_xml, render,
+    render_xml, validate_xml, wss,
+};
 
 /// Shared client: 60 s timeout, `User-Agent: Soapstone/<version>`. Redirects are returned, not followed:
 /// following one would resend the SOAP POST as a GET.
@@ -27,10 +30,10 @@ fn base() -> ClientBuilder {
 
 /// Renders `{{variables}}` in the endpoint, body, headers and auth (nothing is sent when one is undefined),
 /// then POSTs the body with SoapUI's automatic headers. User headers replace automatic ones of the same name.
-pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, String>) -> Result<HttpResponse, SendError> {
+pub fn prepare(call: &SoapCall, vars: &HashMap<String, String>) -> Result<SoapCall, SendError> {
     let mut missing: Vec<String> = Vec::new();
-    let mut r = |template: &str| {
-        render(template, vars).unwrap_or_else(|names| {
+    let mut r = |template: &str, xml: bool| {
+        (if xml { render_xml(template, vars) } else { render(template, vars) }).unwrap_or_else(|names| {
             for name in names {
                 if !missing.contains(&name) {
                     missing.push(name);
@@ -39,27 +42,41 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
             String::new()
         })
     };
-    let endpoint = r(&call.endpoint);
-    let body = r(&call.body);
-    let headers: Vec<(String, String)> = call.headers.iter().map(|h| (r(&h.name), r(&h.value))).collect();
+    let endpoint = r(&call.endpoint, false);
+    let body = r(&call.body, true);
+    let headers: Vec<Header> =
+        call.headers.iter().map(|h| Header { name: r(&h.name, false).trim().to_string(), value: r(&h.value, false) }).collect();
     let auth = match &call.auth {
         Auth::None => Auth::None,
-        Auth::Basic { username, password } => Auth::Basic { username: r(username), password: r(password) },
-        Auth::Bearer { token } => Auth::Bearer { token: r(token) },
-        Auth::Ntlm { username, password, domain } => Auth::Ntlm { username: r(username), password: r(password), domain: r(domain) },
+        Auth::Basic { username, password } => Auth::Basic { username: r(username, false), password: r(password, false) },
+        Auth::Bearer { token } => Auth::Bearer { token: r(token, false) },
+        Auth::Ntlm { username, password, domain } => {
+            Auth::Ntlm { username: r(username, false), password: r(password, false), domain: r(domain, false) }
+        }
     };
     let wss = &call.ws_security;
-    let wss = wss.enabled().then(|| WsSecurity { username: r(&wss.username), password: r(&wss.password), ..wss.clone() });
+    let wss = wss.enabled().then(|| WsSecurity {
+        username: if wss.username_token { r(&wss.username, false) } else { String::new() },
+        password: if wss.username_token { r(&wss.password, false) } else { String::new() },
+        ..wss.clone()
+    });
     let options = &call.options;
-    let cert = (!options.cert_path.trim().is_empty()).then(|| (r(options.cert_path.trim()), r(&options.cert_password)));
+    let cert = (!options.cert_path.trim().is_empty()).then(|| (r(options.cert_path.trim(), false), r(&options.cert_password, false)));
     if !missing.is_empty() {
         return Err(SendError::MissingVariables(missing));
     }
+    for header in headers.iter().filter(|h| !h.name.is_empty()) {
+        let invalid = || SendError::Http(format!("Invalid header \"{}\"", header.name));
+        HeaderName::from_bytes(header.name.as_bytes()).map_err(|_| invalid())?;
+        HeaderValue::from_str(&header.value).map_err(|_| invalid())?;
+    }
+    let headers = headers.into_iter().filter(|h| !h.name.is_empty()).collect();
 
-    let url = Url::parse(endpoint.trim())
+    Url::parse(endpoint.trim())
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https"))
         .ok_or_else(|| SendError::InvalidUrl(endpoint.clone()))?;
+    validate_xml(&body).map_err(SendError::InvalidXml)?;
 
     let body = match wss {
         Some(wss) => {
@@ -70,16 +87,30 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
         None => body,
     };
 
+    let mut options = options.clone();
+    if let Some((path, password)) = cert {
+        options.cert_path = path;
+        options.cert_password = password;
+    }
+    Ok(SoapCall { endpoint: endpoint.trim().into(), body, headers, auth, options, ws_security: WsSecurity::default(), ..call.clone() })
+}
+
+pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, String>) -> Result<HttpResponse, SendError> {
+    let call = prepare(call, vars)?;
+    let options = &call.options;
+    let auth = &call.auth;
+    let cert = !options.cert_path.is_empty();
+
     let own;
     let ntlm = matches!(auth, Auth::Ntlm { .. });
-    let client = if options.insecure || cert.is_some() || ntlm {
+    let client = if options.insecure || cert || ntlm {
         let mut builder = base().danger_accept_invalid_certs(options.insecure);
         if ntlm {
             // The NTLM handshake authenticates one TCP connection: keep exactly one, HTTP/1.1.
             builder = builder.http1_only().pool_max_idle_per_host(1);
         }
-        if let Some((path, password)) = &cert {
-            builder = builder.identity(identity(path, password)?);
+        if cert {
+            builder = builder.identity(identity(&options.cert_path, &options.cert_password)?);
         }
         own = builder.build().map_err(http_error)?;
         &own
@@ -89,11 +120,11 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
 
     let action = call.soap_action.as_deref().filter(|a| !a.is_empty());
     let timeout = Duration::from_secs(options.timeout_seconds.max(1).into());
-    let mut builder = client.post(url).body(body).timeout(timeout);
+    let mut builder = client.post(&call.endpoint).body(call.body).timeout(timeout);
     builder = match call.soap_version {
-        SoapVersion::V11 => builder
-            .header(CONTENT_TYPE, "text/xml;charset=UTF-8")
-            .header("SOAPAction", format!("\"{}\"", action.unwrap_or(""))),
+        SoapVersion::V11 => {
+            builder.header(CONTENT_TYPE, "text/xml;charset=UTF-8").header("SOAPAction", format!("\"{}\"", action.unwrap_or("")))
+        }
         SoapVersion::V12 => builder.header(
             CONTENT_TYPE,
             match action {
@@ -110,15 +141,15 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
     let mut request = builder.build().map_err(http_error)?;
 
     let mut user = Vec::new();
-    for (name, value) in &headers {
-        let name = name.trim();
+    for header in &call.headers {
+        let name = header.name.trim();
         if name.is_empty() {
             continue;
         }
         let invalid = || SendError::Http(format!("Invalid header \"{name}\""));
         user.push((
             HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid())?,
-            HeaderValue::from_str(value).map_err(|_| invalid())?,
+            HeaderValue::from_str(&header.value).map_err(|_| invalid())?,
         ));
     }
     for (name, _) in &user {
@@ -129,7 +160,7 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
     }
 
     let start = Instant::now();
-    let response = match &auth {
+    let mut response = match auth {
         Auth::Ntlm { username, password, domain } => ntlm_exchange(client, request, username, password, domain).await?,
         _ => client.execute(request).await.map_err(http_error)?,
     };
@@ -140,12 +171,22 @@ pub async fn send(client: &Client, call: &SoapCall, vars: &HashMap<String, Strin
         .map(|(n, v)| Header { name: n.as_str().to_string(), value: String::from_utf8_lossy(v.as_bytes()).into_owned() })
         .collect();
     let content_type = response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(String::from);
-    let bytes = response.bytes().await.map_err(http_error)?;
+    const MAX_RESPONSE: usize = 32 * 1024 * 1024;
+    if response.content_length().is_some_and(|size| size > MAX_RESPONSE as u64) {
+        return Err(SendError::Http("Response exceeds the 32 MB limit".into()));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(http_error)? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE {
+            return Err(SendError::Http("Response exceeds the 32 MB limit".into()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let time_ms = start.elapsed().as_millis() as u64;
 
     let body = decode_body(&bytes, content_type.as_deref());
-    let pretty = pretty_xml(&body);
-    let fault = pretty.as_ref().and_then(|_| fault_string(&body));
+    let pretty = (body.len() <= 256 * 1024).then(|| pretty_xml(&body)).flatten();
+    let fault = fault_string(&body);
     Ok(HttpResponse {
         status: status.as_u16(),
         status_text: status.canonical_reason().unwrap_or("").to_string(),

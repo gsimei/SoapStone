@@ -13,8 +13,9 @@ async fn optitravel_import_send_and_store_the_response() {
     assert_eq!(tree[0].operations.len(), 18);
     let id = tree[0].operations.iter().find(|o| o.name == "AVITIK_GETGROUPRESERVES").unwrap().requests[0].id;
     let (call, vars) = s.prepare_send(id).unwrap();
-    let resp = soapstone_http::send(&soapstone_http::client(), &call, &vars).await.unwrap();
+    let mut resp = soapstone_http::send(&soapstone_http::client(), &call, &vars).await.unwrap();
     assert!(resp.status > 0 && !resp.body.is_empty(), "{resp:?}");
     s.save_response(id, &resp).unwrap();
+    resp.pretty = None;
     assert_eq!(s.request(id).unwrap().last_response, Some(resp));
 }

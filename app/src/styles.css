@@ -462,6 +462,26 @@ button.primary:hover:not(:disabled) {
   overflow: hidden;
 }
 
+.editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.editor-toolbar button { font-size: 12px; padding: 3px 7px; }
+.editor-toolbar select { max-width: 310px; }
+.editor-notice { padding: 5px 10px; font-size: 12px; overflow-wrap: anywhere; }
+.variable-tooltip { white-space: pre-wrap; padding: 8px 10px; max-width: 380px; overflow-wrap: anywhere; }
+.preview-dialog { width: min(1000px, 94vw); max-height: 92vh; }
+.preview-endpoint { display: block; overflow-wrap: anywhere; }
+.preview-headers { max-height: 100px; overflow: auto; font-size: 12px; }
+.preview-body { height: 50vh; display: flex; min-height: 0; border: 1px solid var(--border); }
+.response-diff { flex: 1; margin: 0; padding: 12px; overflow: auto; font: 12px/1.5 var(--font-mono); white-space: pre; }
+.sequence-dialog { width: min(1040px, 95vw); max-height: 92vh; overflow: auto; }
+.sequence-steps { border: 0; margin: 0; padding: 0; }
+.sequence-step { border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 12px; }
+.sequence-step .input-row select { flex: 1; min-width: 0; }
+.sequence-fields { display: grid; grid-template-columns: 120px 1fr; gap: 10px; margin-top: 10px; }
+.sequence-fields label { display: flex; flex-direction: column; gap: 4px; }
+.sequence-fields label:nth-child(n+3) { grid-column: 1 / -1; }
+.sequence-results { max-height: 160px; overflow: auto; padding-left: 24px; }
+.success-text { color: var(--ok); }
+
 .cm-var {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);

@@ -60,7 +60,7 @@ fn run(input: &str, op: Option<&str>, time: bool) -> Result<ExitCode, LoadError>
     }
 
     match op {
-        Some(id) => match id.split_once('/').and_then(|(binding, name)| def.operation(binding, name)) {
+        Some(id) => match id.rsplit_once('/').and_then(|(binding, name)| def.operation(binding, name)) {
             Some(o) => println!("{}", def.sample_request(o)),
             None => {
                 eprintln!("operation {id} not found (expected <Binding>/<Operation>)");

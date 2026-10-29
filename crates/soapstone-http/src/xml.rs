@@ -45,6 +45,15 @@ pub fn pretty_xml(text: &str) -> Option<String> {
     if !text.trim_start().starts_with('<') {
         return None;
     }
+    let doc = roxmltree::Document::parse(text).ok()?;
+    // Indentation must not change mixed content, whitespace-only values, or xml:space="preserve".
+    if doc.descendants().filter(|n| n.is_element()).any(|n| {
+        n.attribute(("http://www.w3.org/XML/1998/namespace", "space")) == Some("preserve")
+            || (n.children().any(|c| c.is_element()) && n.children().any(|c| c.is_text() && !c.text().unwrap_or("").trim().is_empty()))
+            || (!n.children().any(|c| c.is_element()) && n.text().is_some_and(|t| !t.is_empty() && t.trim().is_empty()))
+    }) {
+        return Some(text.to_string());
+    }
     let mut reader = Reader::from_str(text);
     let mut out = String::with_capacity(text.len() + text.len() / 4);
     let mut pending = String::new();
@@ -99,6 +108,27 @@ pub fn pretty_xml(text: &str) -> Option<String> {
     (depth == 0 && !out.is_empty()).then_some(out)
 }
 
+pub fn validate_xml(text: &str) -> Result<(), String> {
+    roxmltree::Document::parse(text).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Sensitive SOAP credential text ranges, for display redaction only.
+pub fn password_ranges(text: &str) -> Result<Vec<std::ops::Range<usize>>, String> {
+    let doc = roxmltree::Document::parse(text).map_err(|e| e.to_string())?;
+    Ok(doc
+        .descendants()
+        .filter(|n| {
+            n.is_text()
+                && n.text().is_some_and(|t| !t.trim().is_empty())
+                && n.parent_element().is_some_and(|p| {
+                    let name = p.tag_name().name().to_ascii_lowercase();
+                    ["password", "secret", "token", "apikey"].iter().any(|s| name.contains(s))
+                })
+        })
+        .map(|n| n.range())
+        .collect())
+}
+
 fn new_line(out: &mut String, depth: usize) {
     if !out.is_empty() {
         out.push('\n');
@@ -121,9 +151,8 @@ fn markup(out: &mut String, depth: usize, inline: &mut bool, parts: &[&str]) {
 /// None when `text` is not a SOAP Fault.
 pub fn fault_string(text: &str) -> Option<String> {
     let doc = roxmltree::Document::parse(text).ok()?;
-    let fault = doc
-        .descendants()
-        .find(|n| n.tag_name().name() == "Fault" && matches!(n.tag_name().namespace(), Some(SOAP11_ENV | SOAP12_ENV)))?;
+    let fault =
+        doc.descendants().find(|n| n.tag_name().name() == "Fault" && matches!(n.tag_name().namespace(), Some(SOAP11_ENV | SOAP12_ENV)))?;
     let message = child(fault, "faultstring")
         .or_else(|| child(fault, "Reason").and_then(|r| child(r, "Text")))
         .and_then(|n| n.text())
@@ -171,6 +200,14 @@ mod tests {
     fn pretty_xml_returns_none_for_non_xml() {
         for t in ["", "   ", "Service Unavailable", "<html><body><p>oops</body></html>", "<a><b></a>", "<a>"] {
             assert_eq!(pretty_xml(t), None, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn formatting_rejects_multiple_roots_and_preserves_character_data() {
+        assert_eq!(pretty_xml("<a/><b/>"), None);
+        for xml in ["<p>Hello <b>there</b>!</p>", "<x>  </x>", "<x xml:space=\"preserve\"><a/> </x>"] {
+            assert_eq!(pretty_xml(xml).as_deref(), Some(xml));
         }
     }
 

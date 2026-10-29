@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { message } from "@tauri-apps/plugin-dialog";
 import { api, type Environments, type Project, type ServiceNode } from "./api";
 import { EnvironmentDialog } from "./EnvironmentDialog";
-import { definedVariables, quickOpenItems } from "./logic";
+import { definedVariables, variableInfo, quickOpenItems } from "./logic";
+import { restoreExecutions } from "./executions";
 import { QuickOpen } from "./QuickOpen";
-import { RequestView } from "./RequestView";
 import { Sidebar } from "./Sidebar";
 import { Split } from "./Split";
+const SequenceDialog = lazy(() => import("./SequenceDialog"));
+const RequestView = lazy(() => import("./RequestView").then((m) => ({ default: m.RequestView })));
 
 const NO_ENVIRONMENTS: Environments = { base: [], environments: [], active: null };
 
@@ -22,9 +24,12 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [managing, setManaging] = useState<Environments | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
+  const [sequence, setSequence] = useState(false);
+  const selection = useRef(0);
 
   /** Reloads projects, then the tree and environments of `prefer` (else the first project). */
   async function load(prefer: number | null) {
+    const token = ++selection.current;
     let list = await api.listProjects();
     if (list.length === 0) {
       await api.createProject("My Project");
@@ -32,6 +37,7 @@ export function App() {
     }
     const id = list.find((p) => p.id === prefer)?.id ?? list[0].id;
     const [t, envs] = await Promise.all([api.tree(id), api.getEnvironments(id)]);
+    if (token !== selection.current) return null;
     setProjects(list);
     setProjectId(id);
     setTree(t);
@@ -42,7 +48,10 @@ export function App() {
 
   /** Switches project and reopens the request last opened there. */
   async function selectProject(prefer: number | null) {
-    const { id, tree: t } = await load(prefer);
+    const loaded = await load(prefer);
+    if (!loaded) return;
+    const { id, tree: t } = loaded;
+    setError(null);
     const saved = Number(localStorage.getItem(`soapstone.request.${id}`));
     setRequestId(hasRequest(t, saved) ? saved : null);
   }
@@ -54,6 +63,7 @@ export function App() {
   }
 
   useEffect(() => {
+    void restoreExecutions().catch((e) => setError(String(e)));
     selectProject(Number(localStorage.getItem("soapstone.project")) || null)
       .then(() => api.logMetric("startup"))
       .catch((e) => setError(String(e)));
@@ -62,7 +72,9 @@ export function App() {
 
   /** After a rename, delete, import or refresh: reload, and close the open request if it is gone. */
   async function changed() {
-    const { tree: t } = await load(projectId);
+    const loaded = await load(projectId);
+    if (!loaded) return;
+    const { tree: t } = loaded;
     setRequestId((r) => (r !== null && hasRequest(t, r) ? r : null));
   }
 
@@ -112,6 +124,7 @@ export function App() {
   }, []);
 
   const definedVars = useMemo(() => definedVariables(environments), [environments]);
+  const variables = useMemo(() => variableInfo(environments), [environments]);
 
   return (
     <Split storageKey="sidebar" initial={0.22} min={0.12}>
@@ -143,6 +156,7 @@ export function App() {
             ))}
           </select>
           <button onClick={() => void manageEnvironments()}>Manage environments</button>
+          <button disabled={projectId === null} onClick={() => { window.dispatchEvent(new Event("soapstone:flush")); setSequence(true); }}>Test sequence</button>
           <span className="spacer" />
           <button className="quiet" onClick={() => setQuickOpen(true)} title="Go to request (⌘P / Ctrl+P)">
             Go to request…
@@ -153,7 +167,9 @@ export function App() {
         ) : requestId === null ? (
           <div className="empty">Import a WSDL or pick a request.</div>
         ) : (
-          <RequestView key={requestId} requestId={requestId} definedVars={definedVars} switchStart={switchStart} />
+          <Suspense fallback={<div className="empty">Loading editor…</div>}>
+            <RequestView key={requestId} requestId={requestId} definedVars={definedVars} variables={variables} switchStart={switchStart} />
+          </Suspense>
         )}
         {managing && (
           <EnvironmentDialog initial={managing} onClose={() => setManaging(null)} onSave={(envs) => void saveEnvironments(envs)} />
@@ -168,6 +184,9 @@ export function App() {
             }}
           />
         )}
+        {sequence && projectId !== null && <Suspense fallback={<div className="empty">Loading test sequence…</div>}>
+          <SequenceDialog projectId={projectId} tree={tree} onClose={() => setSequence(false)} />
+        </Suspense>}
       </main>
     </Split>
   );

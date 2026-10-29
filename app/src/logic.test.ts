@@ -48,6 +48,15 @@ test("quickOpenItems lists every request with its path", () => {
   ]);
 });
 
+test("quick open and search distinguish equal operation names across namespaces", () => {
+  const tree: ServiceNode[] = [{ id: 1, name: "Service", operations: [
+    { id: 1, binding: "B", bindingNamespace: "urn:first", name: "Op", orphan: false, requests: [{ id: 10, name: "Request 1" }] },
+    { id: 2, binding: "B", bindingNamespace: "urn:second", name: "Op", orphan: false, requests: [{ id: 20, name: "Request 1" }] },
+  ] }];
+  expect(new Set(quickOpenItems(tree).map((i) => i.label)).size).toBe(2);
+  expect(filterTree(tree, "urn:second")[0].operations.map((o) => o.id)).toEqual([2]);
+});
+
 test("formatSize", () => {
   expect([formatSize(512), formatSize(4198), formatSize(2411724)]).toEqual(["512 B", "4.1 KB", "2.3 MB"]);
 });

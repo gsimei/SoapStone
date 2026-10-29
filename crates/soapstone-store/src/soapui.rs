@@ -27,6 +27,7 @@ pub struct SoapuiInterface {
     pub name: String,
     /// Local name of the WSDL binding.
     pub binding: String,
+    pub binding_namespace: String,
     /// The WSDL URL SoapUI loaded.
     pub definition: String,
     /// The cached WSDL and schemas, root first; empty when SoapUI kept no cache.
@@ -97,15 +98,31 @@ impl Store {
             let operations: Vec<_> = unique_operations(&def).collect();
             // A call goes to its operation in its interface's binding, else to the first operation of that name
             // (SoapUI can store a binding name without its local part).
-            let mut calls: HashMap<(&str, &str), Vec<&SoapuiCall>> = HashMap::new();
+            let mut calls: HashMap<(&str, &str, &str), Vec<&SoapuiCall>> = HashMap::new();
             for interface in &interfaces {
                 for call in &interface.calls {
+                    if interface.binding_namespace.is_empty()
+                        && !interface.binding.is_empty()
+                        && operations.iter().filter(|o| o.binding == interface.binding && o.name == call.operation).count() > 1
+                    {
+                        notes.push(format!(
+                            "\"{} › {}\" was not imported: binding \"{}\" is ambiguous across namespaces.",
+                            call.operation, call.name, interface.binding
+                        ));
+                        continue;
+                    }
                     let target = operations
                         .iter()
-                        .find(|o| o.binding == interface.binding && o.name == call.operation)
-                        .or_else(|| operations.iter().find(|o| o.name == call.operation));
+                        .find(|o| {
+                            o.binding == interface.binding
+                                && o.name == call.operation
+                                && (interface.binding_namespace.is_empty() || o.binding_namespace == interface.binding_namespace)
+                        })
+                        .or_else(|| operations.iter().find(|o| interface.binding.is_empty() && o.name == call.operation));
                     match target {
-                        Some(op) => calls.entry((op.binding.as_str(), op.name.as_str())).or_default().push(call),
+                        Some(op) => {
+                            calls.entry((op.binding_namespace.as_str(), op.binding.as_str(), op.name.as_str())).or_default().push(call)
+                        }
                         None => notes.push(format!(
                             "\"{} › {}\" was not imported: the WSDL has no operation \"{}\".",
                             call.operation, call.name, call.operation
@@ -116,12 +133,13 @@ impl Store {
             let service_id = insert_service(&tx, project_id, &def, &FetchSettings::default())?;
             services += 1;
             for op in operations {
-                let Some(saved) = calls.get(&(op.binding.as_str(), op.name.as_str())) else {
+                let Some(saved) = calls.get(&(op.binding_namespace.as_str(), op.binding.as_str(), op.name.as_str())) else {
                     insert_operation(&tx, &def, service_id, op)?;
                     requests += 1;
                     continue;
                 };
                 let operation_id = insert_operation_row(&tx, service_id, op)?;
+                tx.execute("UPDATE operations SET sample_body = ?1 WHERE id = ?2", params![def.sample_request(op), operation_id])?;
                 for call in saved {
                     let endpoint = if call.endpoint.is_empty() { op.endpoint.as_deref().unwrap_or("") } else { &call.endpoint };
                     tx.execute(
@@ -191,7 +209,13 @@ pub fn parse_soapui(xml: &str) -> std::result::Result<SoapuiProject, String> {
             continue;
         }
         let binding = i.attribute("bindingName").unwrap_or("");
-        let binding = binding.rsplit_once('}').map_or(binding, |(_, local)| local).to_string();
+        let (binding_namespace, binding) = if let Some((ns, local)) = binding.strip_prefix('{').and_then(|b| b.split_once('}')) {
+            (ns.to_string(), local.to_string())
+        } else if let Some((prefix, local)) = binding.split_once(':') {
+            (i.lookup_namespace_uri(Some(prefix)).unwrap_or("").to_string(), local.to_string())
+        } else {
+            (String::new(), binding.to_string())
+        };
         let mut calls = Vec::new();
         for op in children(i, "operation") {
             let operation = op.attribute("name").unwrap_or("");
@@ -200,7 +224,7 @@ pub fn parse_soapui(xml: &str) -> std::result::Result<SoapuiProject, String> {
             }
         }
         let definition = normalized(i.attribute("definition").unwrap_or(""));
-        interfaces.push(SoapuiInterface { name, binding, definition, documents: cache(xml, i), calls });
+        interfaces.push(SoapuiInterface { name, binding, binding_namespace, definition, documents: cache(xml, i), calls });
     }
 
     for (tag, what) in [("testSuite", "test suites"), ("mockService", "mock services")] {

@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { Menu, type MenuItemOptions, type CheckMenuItemOptions, type PredefinedMenuItemOptions } from "@tauri-apps/api/menu";
-import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open, save } from "@tauri-apps/plugin-dialog";
 import { api, type Kind, type OperationNode, type Project, type ServiceNode } from "./api";
 import { ImportDialog } from "./ImportDialog";
 import { filterTree, importSummary, plain } from "./logic";
+import { waitForSaves } from "./executions";
 
 type MenuEntry = MenuItemOptions | CheckMenuItemOptions | PredefinedMenuItemOptions;
 type Renaming = { kind: Kind; id: number; value: string };
@@ -91,6 +92,31 @@ export function Sidebar(props: {
     await message(importSummary(report), { title: "Import SoapUI project", kind: report.notes.length ? "warning" : "info" });
   }
 
+  async function importProject() {
+    const path = await open({ multiple: false, filters: [{ name: "Soapstone project", extensions: ["json"] }] });
+    if (typeof path === "string") props.onSelectProject(await api.importProject(path));
+  }
+
+  async function exportProject() {
+    window.dispatchEvent(new Event("soapstone:flush"));
+    await waitForSaves();
+    const path = await save({ defaultPath: `${project?.name ?? "project"}.soapstone.json`, filters: [{ name: "Soapstone project", extensions: ["json"] }] });
+    if (path) {
+      await api.exportProject(props.projectId, path);
+      await message("Project exported. Secret variables and literal authentication credentials were omitted. Replace any other sensitive values embedded in XML or URLs with secret variables before sharing.", { title: "Export project", kind: "info" });
+    }
+  }
+
+  async function duplicateRequest(id: number) {
+    window.dispatchEvent(new Event("soapstone:flush"));
+    await waitForSaves(id);
+    const duplicate = await api.duplicateRequest(id);
+    const operation = props.tree.flatMap((s) => s.operations).find((o) => o.requests.some((r) => r.id === id));
+    if (operation) setExpanded((s) => new Set(s).add(operation.id));
+    await props.onChanged();
+    props.onOpenRequest(duplicate);
+  }
+
   function projectMenu() {
     if (!project) return;
     void run(() =>
@@ -111,6 +137,8 @@ export function Sidebar(props: {
             }),
         },
         { text: "Import SoapUI project…", action: () => void run(importSoapui) },
+        { text: "Import Soapstone project…", action: () => void run(importProject) },
+        { text: "Export project without secrets…", action: () => void run(exportProject) },
         { text: "Rename project", action: () => setRenaming({ kind: "project", id: project.id, value: project.name }) },
         {
           text: "Delete project",
@@ -152,6 +180,7 @@ export function Sidebar(props: {
         ...(only
           ? [
               SEPARATOR,
+              { text: "Duplicate request", action: () => void run(() => duplicateRequest(only.id)) },
               { text: "Rename request", action: () => setRenaming({ kind: "request", id: only.id, value: only.name }) },
               { text: "Delete request", action: () => void run(() => confirmDelete("request", only.id, `request "${only.name}"`)) },
             ]
@@ -163,6 +192,7 @@ export function Sidebar(props: {
   function requestMenu(id: number, name: string) {
     void run(() =>
       popup([
+        { text: "Duplicate", action: () => void run(() => duplicateRequest(id)) },
         { text: "Rename", action: () => setRenaming({ kind: "request", id, value: name }) },
         { text: "Delete", action: () => void run(() => confirmDelete("request", id, `request "${name}"`)) },
       ]),
@@ -216,7 +246,7 @@ export function Sidebar(props: {
         {searching && tree.length === 0 && props.tree.length > 0 && <p className="muted tree-empty">No matches.</p>}
         {tree.map((s) => {
           const open = searching || !collapsed.has(s.id);
-          const showBinding = new Set(s.operations.map((o) => o.binding)).size > 1;
+          const showBinding = new Set(s.operations.map((o) => `${o.bindingNamespace}:${o.binding}`)).size > 1;
           return (
             <div key={s.id} role="group">
               <Row
@@ -250,7 +280,7 @@ export function Sidebar(props: {
                       >
                         <span className="chevron" aria-hidden>{multi ? (opOpen ? "▾" : "▸") : ""}</span>
                         <span className="label">{op.name}</span>
-                        {showBinding && <span className="muted binding">{op.binding}</span>}
+                        {showBinding && <span className="muted binding" title={`${op.bindingNamespace ?? ""} · ${op.binding}`}>{op.binding}{s.operations.some((other) => other.binding === op.binding && other.bindingNamespace !== op.bindingNamespace) ? ` · ${op.bindingNamespace}` : ""}</span>}
                       </Row>
                       {opOpen &&
                         op.requests.map((r) => (

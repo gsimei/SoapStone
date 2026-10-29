@@ -74,6 +74,31 @@ fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
+#[tokio::test]
+async fn invalid_xml_is_rejected_before_any_connection() {
+    let mut c = call("http://127.0.0.1:1", SoapVersion::V11, None);
+    c.body = "<a/><b/>".into();
+    assert!(matches!(send(&client(), &c, &vars(&[])).await, Err(SendError::InvalidXml(_))));
+    c.body = "<a>{{fragment|raw}}</a>".into();
+    assert!(matches!(send(&client(), &c, &vars(&[("fragment", "<unclosed>")])).await, Err(SendError::InvalidXml(_))));
+}
+
+#[tokio::test]
+async fn xml_password_is_escaped_on_the_wire() {
+    let (url, rx) = serve_once(http("200 OK", &[], b"<r/>"));
+    let mut c = call(&url, SoapVersion::V11, None);
+    c.body = "<Password>{{pw}}</Password>".into();
+    send(&client(), &c, &vars(&[("pw", "demo&<value")])).await.unwrap();
+    assert!(received(rx).ends_with("<Password>demo&amp;&lt;value</Password>"));
+}
+
+#[tokio::test]
+async fn oversized_declared_response_is_rejected_without_reading_its_body() {
+    let (url, _) = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 33554433\r\nConnection: close\r\n\r\n".to_vec());
+    assert!(matches!(send(&client(), &call(&url, SoapVersion::V11, None), &vars(&[])).await,
+        Err(SendError::Http(message)) if message.contains("32 MB")));
+}
+
 fn received(rx: mpsc::Receiver<String>) -> String {
     rx.recv_timeout(Duration::from_secs(5)).unwrap()
 }

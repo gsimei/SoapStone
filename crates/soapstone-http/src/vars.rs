@@ -6,15 +6,37 @@ use std::collections::HashMap;
 /// A name is `[A-Za-z_][A-Za-z0-9_.-]*`, with optional spaces inside the braces; anything else stays as written.
 /// Values are inserted as they are, never scanned again.
 pub fn render(template: &str, vars: &HashMap<String, String>) -> Result<String, Vec<String>> {
+    substitute(template, vars, false)
+}
+
+/// XML text/attribute values are escaped; `{{name|raw}}` explicitly inserts XML markup.
+/// CDATA remains character data, splitting a closing delimiter when necessary.
+pub fn render_xml(template: &str, vars: &HashMap<String, String>) -> Result<String, Vec<String>> {
+    substitute(template, vars, true)
+}
+
+fn substitute(template: &str, vars: &HashMap<String, String>, xml: bool) -> Result<String, Vec<String>> {
     let mut out = String::with_capacity(template.len());
     let mut missing: Vec<String> = Vec::new();
     let mut rest = template;
+    let mut cdata = false;
     while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
+        let prefix = &rest[..start];
+        for token in prefix.split_inclusive('>') {
+            if token.contains("<![CDATA[") {
+                cdata = true;
+            }
+            if token.ends_with("]]>") {
+                cdata = false;
+            }
+        }
+        out.push_str(prefix);
         let after = &rest[start + 2..];
         match variable(after) {
-            Some((name, len)) => {
+            Some((name, len, raw)) => {
                 match vars.get(name) {
+                    Some(value) if xml && cdata => out.push_str(&value.replace("]]>", "]]]]><![CDATA[>")),
+                    Some(value) if xml && !raw => out.push_str(&escape_xml(value)),
                     Some(value) => out.push_str(value),
                     None if !missing.iter().any(|m| m == name) => missing.push(name.to_string()),
                     None => {}
@@ -32,20 +54,30 @@ pub fn render(template: &str, vars: &HashMap<String, String>) -> Result<String, 
 }
 
 /// Parses `  name  }}` at the start of `s` (just after `{{`): the name and the bytes consumed through `}}`.
-fn variable(s: &str) -> Option<(&str, usize)> {
+fn variable(s: &str) -> Option<(&str, usize, bool)> {
     let trimmed = s.trim_start_matches(' ');
     let lead = s.len() - trimmed.len();
     let first = trimmed.chars().next()?;
     if !(first.is_ascii_alphabetic() || first == '_') {
         return None;
     }
-    let name_len = trimmed
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
-        .unwrap_or(trimmed.len());
+    let name_len = trimmed.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))).unwrap_or(trimmed.len());
     let after_name = &trimmed[name_len..];
     let tail = after_name.trim_start_matches(' ');
-    tail.starts_with("}}")
-        .then(|| (&trimmed[..name_len], lead + name_len + (after_name.len() - tail.len()) + 2))
+    let raw = tail.starts_with("|raw");
+    let tail = if raw { tail[4..].trim_start_matches(' ') } else { tail };
+    tail.starts_with("}}").then(|| (&trimmed[..name_len], lead + name_len + (after_name.len() - tail.len()) + 2, raw))
+}
+
+pub fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+        .replace('\r', "&#13;")
+        .replace('\n', "&#10;")
+        .replace('\t', "&#9;")
 }
 
 #[cfg(test)]
@@ -82,5 +114,24 @@ mod tests {
     #[test]
     fn handles_multibyte_text_and_adjacent_variables() {
         assert_eq!(render("é{{a}}{{a}}ç", &vars(&[("a", "ü")])), Ok("éüüç".to_string()));
+    }
+
+    #[test]
+    fn xml_values_round_trip_in_text_attributes_and_cdata() {
+        let value = "demo&<tag>\"'";
+        let values = vars(&[("pw", value), ("fragment", "<extra>ok</extra>")]);
+        let xml = super::render_xml(
+            r#"<r value="{{pw}}"><pw>{{pw}}</pw><raw>{{fragment|raw}}</raw><data><![CDATA[{{pw}}]]></data></r>"#,
+            &values,
+        )
+        .unwrap();
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        assert_eq!(doc.root_element().attribute("value"), Some(value));
+        assert_eq!(doc.descendants().find(|n| n.has_tag_name("pw")).unwrap().text(), Some(value));
+        assert!(doc.descendants().any(|n| n.has_tag_name("extra")));
+        assert_eq!(doc.descendants().find(|n| n.has_tag_name("data")).unwrap().text(), Some(value));
+        let xml = super::render_xml("<r><![CDATA[{{pw}}]]></r>", &vars(&[("pw", "a]]>b")])).unwrap();
+        let doc = roxmltree::Document::parse(&xml).unwrap();
+        assert_eq!(doc.root_element().children().filter_map(|n| n.text()).collect::<String>(), "a]]>b");
     }
 }

@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { message, open } from "@tauri-apps/plugin-dialog";
-import { api, type Auth, type HttpResponse, type Request, type RequestEdit, type RequestOptions, type WsSecurity } from "./api";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
+import { api, type Auth, type HttpResponse, type Request, type RequestEdit, type RequestOptions, type WsSecurity, type Preview } from "./api";
 import { KeyValueTable } from "./KeyValueTable";
 import { ResponsePane, Tabs } from "./ResponsePane";
 import { Split } from "./Split";
 import { XmlEditor } from "./XmlEditor";
-import { plain, wholeNumber } from "./logic";
+import { plain, wholeNumber, VARIABLE_RE, type VariableInfo } from "./logic";
+import { useExecution, currentExecution, sendRequest, cancelRequest, saveRequest, loadRequest } from "./executions";
+import { PreviewDialog } from "./PreviewDialog";
 
 const AUTH_LABEL = { none: "None", basic: "Basic", bearer: "Bearer", ntlm: "NTLM" } as const;
 
@@ -19,43 +21,50 @@ function emptyAuth(type: Auth["type"]): Auth {
 type Tab = "body" | "headers" | "auth" | "wss" | "settings";
 
 /** Rendered as <RequestView key={requestId}/>: loads, edits, autosaves and sends one request. */
-export function RequestView(props: { requestId: number; definedVars: Set<string>; switchStart: number | null }) {
+export function RequestView(props: { requestId: number; definedVars: Set<string>; variables?: VariableInfo[]; switchStart: number | null }) {
   const [request, setRequest] = useState<Request | null>(null);
   const [edit, setEdit] = useState<RequestEdit | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("body");
   const [response, setResponse] = useState<HttpResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
+  const execution = useExecution(props.requestId);
+  const sending = execution.runId !== null;
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [toolBusy, setToolBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const alive = useRef(true);
   const pending = useRef<RequestEdit | null>(null);
+  const latestEdit = useRef<RequestEdit | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
   function flush() {
     window.clearTimeout(timer.current);
     const e = pending.current;
     pending.current = null;
-    if (e) api.saveRequest(e).catch((err) => message(`Could not save the request: ${err}`, { title: "Soapstone", kind: "error" }));
+    if (e) void saveRequest(e).catch((err) => message(`Could not save the request: ${err}`, { title: "Soapstone", kind: "error" }));
   }
 
   function update(patch: Partial<RequestEdit>) {
-    setEdit((prev) => {
-      const next = { ...prev!, ...patch };
-      pending.current = next;
-      return next;
-    });
+    if (!latestEdit.current) return;
+    const next = { ...latestEdit.current, ...patch };
+    pending.current = next;
+    latestEdit.current = next;
+    setEdit(next);
     window.clearTimeout(timer.current);
     timer.current = window.setTimeout(flush, 500);
   }
 
   useEffect(() => {
-    api
-      .getRequest(props.requestId)
+    alive.current = true;
+    const revision = currentExecution(props.requestId).revision;
+    loadRequest(props.requestId)
       .then((r) => {
         if (!alive.current) return;
         setRequest(r);
-        setEdit({ id: r.id, endpoint: r.endpoint, body: r.body, headers: r.headers, auth: r.auth, wsSecurity: r.wsSecurity, options: r.options });
-        setResponse(r.lastResponse);
+        latestEdit.current = { id: r.id, endpoint: r.endpoint, body: r.body, headers: r.headers, auth: r.auth, wsSecurity: r.wsSecurity, options: r.options };
+        setEdit(latestEdit.current);
+        if (currentExecution(props.requestId).revision === revision) setResponse(r.lastResponse);
       })
       .catch((e) => alive.current && setLoadError(String(e)));
     return () => {
@@ -63,6 +72,19 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
       flush();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the parent keys this view by request id
+  }, []);
+
+  useEffect(() => {
+    if (execution.runId || execution.revision === 0) return;
+    let current = true;
+    void api.getRequest(props.requestId).then((r) => { if (current) setResponse(r.lastResponse); }).catch((e) => { if (current) setError(String(e)); });
+    return () => { current = false; };
+  }, [props.requestId, execution.revision, execution.runId]);
+
+  useEffect(() => {
+    const flushEdits = () => flush();
+    window.addEventListener("soapstone:flush", flushEdits);
+    return () => window.removeEventListener("soapstone:flush", flushEdits);
   }, []);
 
   useEffect(() => {
@@ -75,15 +97,12 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
     if (!edit || sending) return;
     window.clearTimeout(timer.current);
     pending.current = null; // send_request saves the edit first
-    setSending(true);
     setError(null);
     try {
-      const r = await api.send(edit);
+      const r = await sendRequest(edit);
       if (alive.current) setResponse(r);
     } catch (e) {
       if (alive.current) setError(String(e));
-    } finally {
-      if (alive.current) setSending(false);
     }
   }
 
@@ -92,6 +111,7 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        if (document.querySelector("dialog[open]")) return;
         e.preventDefault();
         void sendRef.current();
       }
@@ -108,6 +128,29 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
   const options = edit.options;
   const setWss = (patch: Partial<WsSecurity>) => update({ wsSecurity: { ...wss, ...patch } });
   const setOptions = (patch: Partial<RequestOptions>) => update({ options: { ...options, ...patch } });
+  const missing = [...new Set([...JSON.stringify(edit).matchAll(new RegExp(VARIABLE_RE.source, "g"))].map((m) => m[1]).filter((name) => !props.definedVars.has(name)))];
+
+  async function tool(action: "format" | "validate" | "preview" | "sample") {
+    if (!edit || toolBusy) return;
+    setToolBusy(true); setError(null); setNotice(null);
+    const original = edit.body;
+    const replace = (body: string) => {
+      if (!alive.current) return;
+      if (latestEdit.current?.body !== original) throw new Error("The body changed while this action was running. Try again.");
+      update({ body });
+    };
+    try {
+      if (action === "sample") {
+        if (await ask("Replace this request body with the WSDL sample? You can undo the replacement in the editor.", { title: "Reset sample", kind: "warning" })) replace(await api.sample(edit.id));
+      } else if (action === "format") replace(await api.formatXml(edit.body));
+      else {
+        const result = await api.preview(edit);
+        if (action === "preview") setPreview(result);
+        else setNotice("XML and variables are valid.");
+      }
+    } catch (e) { if (alive.current) setError(String(e)); }
+    finally { if (alive.current) setToolBusy(false); }
+  }
 
   async function browseCertificate() {
     const file = await open({
@@ -122,14 +165,14 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
   }
 
   return (
-    <Split storageKey="panes" initial={0.5} min={0.2}>
+    <><Split storageKey="panes" initial={0.5} min={0.2}>
       <section className="request" aria-label="Request">
         <header className="request-head">
           <div className="title">
             {request.operation} <span className="muted">›</span> {request.name}
           </div>
           <div className="muted small">
-            SOAP {request.soapVersion} · SOAPAction "{request.soapAction ?? ""}"
+            SOAP {request.soapVersion} · <span title={request.bindingNamespace}>{request.binding}</span> · SOAPAction "{request.soapAction ?? ""}"
           </div>
         </header>
         <div className="endpoint-row">
@@ -141,7 +184,7 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
             onChange={(e) => update({ endpoint: e.target.value })}
           />
           {sending ? (
-            <button onClick={() => void api.cancelSend(edit.id)}>Cancel</button>
+            <button onClick={() => void cancelRequest(edit.id).catch((e) => setError(String(e)))}>Cancel</button>
           ) : (
             <button className="primary" title="Send (⌘↵ / Ctrl+Enter)" onClick={() => void send()}>
               Send
@@ -160,7 +203,16 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
           ]}
         />
         <div className="tab-body" hidden={tab !== "body"}>
-          <XmlEditor docKey={request.id} value={edit.body} onChange={(body) => update({ body })} definedVars={props.definedVars} />
+          <div className="editor-toolbar">
+            <button disabled={toolBusy} onClick={() => void tool("format")}>Format XML</button>
+            <button disabled={toolBusy} onClick={() => void tool("validate")}>Validate</button>
+            <button disabled={toolBusy} onClick={() => void tool("preview")}>Preview</button>
+            <button disabled={toolBusy} onClick={() => void tool("sample")}>Reset sample</button>
+            <span className="muted small">Variables: {"{{name}}"} · XML fragment: {"{{name|raw}}"}</span>
+          </div>
+          {missing.length > 0 && <div className="editor-notice error-text">Undefined variables: {missing.join(", ")}. Add them in Manage environments.</div>}
+          {notice && <div className="editor-notice" role="status">{notice}</div>}
+          <XmlEditor docKey={request.id} value={edit.body} onChange={(body) => update({ body })} definedVars={props.definedVars} variables={props.variables} />
         </div>
         <div className="tab-body scroll padded" hidden={tab !== "headers"}>
           <KeyValueTable
@@ -309,7 +361,8 @@ export function RequestView(props: { requestId: number; definedVars: Set<string>
           <p className="hint">Only for test servers: the connection is no longer verified.</p>
         </div>
       </section>
-      <ResponsePane response={response} error={error} sending={sending} />
+      <ResponsePane requestId={props.requestId} revision={execution.revision} response={response} error={error ?? execution.error} sending={sending} />
     </Split>
+    {preview && <PreviewDialog preview={preview} onClose={() => setPreview(null)} />}</>
   );
 }

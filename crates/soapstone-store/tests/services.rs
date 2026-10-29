@@ -1,4 +1,4 @@
-use soapstone_core::{fetch_all, to_url, Definition, Document, SoapVersion};
+use soapstone_core::{Definition, Document, SoapVersion, fetch_all, to_url};
 use soapstone_http::SoapCall;
 use soapstone_store::*;
 
@@ -14,7 +14,15 @@ fn op<'a>(tree: &'a [ServiceNode], name: &str) -> &'a OperationNode {
     tree.iter().flat_map(|s| &s.operations).find(|o| o.name == name).unwrap()
 }
 fn edit(id: i64, endpoint: &str, body: &str) -> RequestEdit {
-    RequestEdit { id, endpoint: endpoint.into(), body: body.into(), headers: vec![], auth: Auth::None, ws_security: Default::default(), options: Default::default() }
+    RequestEdit {
+        id,
+        endpoint: endpoint.into(),
+        body: body.into(),
+        headers: vec![],
+        auth: Auth::None,
+        ws_security: Default::default(),
+        options: Default::default(),
+    }
 }
 fn none() -> FetchSettings {
     FetchSettings::default()
@@ -70,8 +78,18 @@ fn edits_and_the_last_response_are_saved() {
         options: Default::default(),
     };
     s.save_request(&e).unwrap();
-    let resp = HttpResponse { status: 200, status_text: "OK".into(), time_ms: 12, size: 4, headers: vec![], body: "<r/>".into(), pretty: Some("<r/>".into()), fault: None };
+    let mut resp = HttpResponse {
+        status: 200,
+        status_text: "OK".into(),
+        time_ms: 12,
+        size: 4,
+        headers: vec![],
+        body: "<r/>".into(),
+        pretty: Some("<r/>".into()),
+        fault: None,
+    };
     s.save_response(id, &resp).unwrap();
+    resp.pretty = None; // formatting is recreated by the active response tab, not persisted
     let r = s.request(id).unwrap();
     assert_eq!((r.endpoint, r.body, r.headers, r.auth, r.last_response), (e.endpoint, e.body, e.headers, e.auth, Some(resp)));
 }
@@ -112,22 +130,29 @@ fn refresh_marks_missing_operations_orphan_and_keeps_requests() {
 fn prepare_send_combines_request_operation_and_variables() {
     let mut s = Store::open_in_memory().unwrap();
     s.import_service(1, docs("calculator/calculator.wsdl"), &none()).unwrap();
-    s.set_environments(1, &Environments { base: vec![Variable { name: "baseUrl".into(), value: "http://x".into(), secret: false }], ..Default::default() }).unwrap();
+    s.set_environments(
+        1,
+        &Environments { base: vec![Variable { name: "baseUrl".into(), value: "http://x".into(), secret: false }], ..Default::default() },
+    )
+    .unwrap();
     let tree = s.tree(1).unwrap();
     let add12 = tree[0].operations.iter().find(|o| o.binding == "CalculatorSoap12" && o.name == "Add").unwrap();
     let id = add12.requests[0].id;
     s.save_request(&edit(id, "{{baseUrl}}/calc", "<b/>")).unwrap();
     let (call, vars) = s.prepare_send(id).unwrap();
-    assert_eq!(call, SoapCall {
-        endpoint: "{{baseUrl}}/calc".into(),
-        soap_version: SoapVersion::V12,
-        soap_action: Some("http://tempuri.org/Add".into()),
-        headers: vec![],
-        auth: Auth::None,
-        body: "<b/>".into(),
-        ws_security: Default::default(),
-        options: Default::default(),
-    });
+    assert_eq!(
+        call,
+        SoapCall {
+            endpoint: "{{baseUrl}}/calc".into(),
+            soap_version: SoapVersion::V12,
+            soap_action: Some("http://tempuri.org/Add".into()),
+            headers: vec![],
+            auth: Auth::None,
+            body: "<b/>".into(),
+            ws_security: Default::default(),
+            options: Default::default(),
+        }
+    );
     assert_eq!(vars["baseUrl"], "http://x");
 }
 
@@ -204,7 +229,11 @@ fn service_keeps_its_fetch_settings_and_renders_them() {
         Err(StoreError::Variables(names)) => assert_eq!(names, ["wu"]),
         other => panic!("expected undefined variables, got {other:?}"),
     }
-    s.set_environments(1, &Environments { base: vec![Variable { name: "wu".into(), value: "bob".into(), secret: false }], ..Default::default() }).unwrap();
+    s.set_environments(
+        1,
+        &Environments { base: vec![Variable { name: "wu".into(), value: "bob".into(), secret: false }], ..Default::default() },
+    )
+    .unwrap();
     let options = s.fetch_options(1, &fetch).unwrap();
     assert_eq!(options, soapstone_core::FetchOptions { username: "bob".into(), password: "pw".into(), insecure: true });
 

@@ -1,5 +1,7 @@
 //! Soapstone local storage: projects, environments, services and requests in one SQLite file.
 
+mod backup;
+mod history;
 mod services;
 mod soapui;
 mod vault;
@@ -10,10 +12,11 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+pub use history::*;
 pub use services::*;
+pub use soapstone_http::{Auth, Header, HttpResponse, PasswordType, RequestOptions, WsSecurity};
 pub use soapui::*;
 pub use vault::Vault;
-pub use soapstone_http::{Auth, Header, HttpResponse, PasswordType, RequestOptions, WsSecurity};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -30,6 +33,8 @@ pub enum StoreError {
     Variables(Vec<String>),
     #[error("System keychain: {0}")]
     Vault(String),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -136,6 +141,42 @@ ALTER TABLE requests ADD COLUMN options TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE services ADD COLUMN fetch TEXT NOT NULL DEFAULT '{}';
 "#;
 
+// Rebuild the old unique constraint, preserving operation and request IDs.
+const MIGRATION_3: &str = r#"
+CREATE TABLE operations_v3 (
+  id INTEGER PRIMARY KEY,
+  service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  binding TEXT NOT NULL,
+  binding_namespace TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  soap_version TEXT NOT NULL,
+  soap_action TEXT,
+  endpoint TEXT,
+  orphan INTEGER NOT NULL DEFAULT 0,
+  sample_body TEXT,
+  UNIQUE (service_id, binding_namespace, binding, name)
+);
+INSERT INTO operations_v3 (id, service_id, binding, name, soap_version, soap_action, endpoint, orphan)
+  SELECT id, service_id, binding, name, soap_version, soap_action, endpoint, orphan FROM operations;
+DROP TABLE operations;
+ALTER TABLE operations_v3 RENAME TO operations;
+CREATE INDEX IF NOT EXISTS requests_operation ON requests(operation_id);
+CREATE TABLE history (
+  id INTEGER PRIMARY KEY,
+  request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  status INTEGER NOT NULL,
+  time_ms INTEGER NOT NULL,
+  size INTEGER NOT NULL,
+  response TEXT NOT NULL
+);
+CREATE INDEX history_request ON history(request_id, id DESC);
+CREATE TABLE test_plans (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  steps TEXT NOT NULL DEFAULT '[]'
+);
+"#;
+
 pub struct Store {
     conn: Connection,
     vault: Vault,
@@ -203,8 +244,21 @@ impl Store {
         if version < 2 {
             conn.execute_batch(&format!("BEGIN; {MIGRATION_2} PRAGMA user_version = 2; COMMIT;"))?;
         }
+        if version < 3 {
+            conn.pragma_update(None, "foreign_keys", false)?;
+            let result = conn.execute_batch(&format!("BEGIN; {MIGRATION_3} PRAGMA user_version = 3; COMMIT;"));
+            if result.is_err() {
+                let _ = conn.execute_batch("ROLLBACK;");
+            }
+            conn.pragma_update(None, "foreign_keys", true)?;
+            result?;
+        }
         conn.execute("INSERT INTO projects (name) SELECT 'My Project' WHERE NOT EXISTS (SELECT 1 FROM projects)", [])?;
-        Ok(Store { conn, vault })
+        let mut store = Store { conn, vault };
+        if version < 3 {
+            store.upgrade_operations()?;
+        }
+        Ok(store)
     }
 
     /// Ordered by id.
@@ -247,10 +301,8 @@ impl Store {
     }
 
     fn stored_environments(&self, project_id: i64) -> Result<Stored> {
-        let json: Option<String> = self
-            .conn
-            .query_row("SELECT environments FROM projects WHERE id = ?1", [project_id], |r| r.get(0))
-            .optional()?;
+        let json: Option<String> =
+            self.conn.query_row("SELECT environments FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).optional()?;
         let json = json.ok_or_else(|| StoreError::NotFound(format!("project {project_id}")))?;
         Ok(serde_json::from_str(&json)?)
     }
@@ -279,9 +331,11 @@ impl Store {
         let mut json = String::new();
         for k in 0..parts {
             let name = account(project_id, k);
-            json += &self.vault.get(&name).map_err(StoreError::Vault)?.ok_or_else(|| {
-                StoreError::Vault(format!("the entry {name} is missing. Enter the project's secret values again."))
-            })?;
+            json += &self
+                .vault
+                .get(&name)
+                .map_err(StoreError::Vault)?
+                .ok_or_else(|| StoreError::Vault(format!("the entry {name} is missing. Enter the project's secret values again.")))?;
         }
         let secrets: Secrets = serde_json::from_str(&json)?;
         for (scope, vars) in scopes(&mut envs) {
@@ -297,6 +351,18 @@ impl Store {
     /// Secret values go to the keychain and are blanked in the database. When the keychain fails they are
     /// kept in the database instead, and the warning to show is returned.
     pub fn set_environments(&self, project_id: i64, environments: &Environments) -> Result<Option<String>> {
+        for vars in std::iter::once(&environments.base).chain(environments.environments.iter().map(|e| &e.variables)) {
+            let mut names = std::collections::HashSet::new();
+            for variable in vars.iter().filter(|v| !v.name.trim().is_empty()) {
+                let name = variable.name.trim();
+                if !valid_variable_name(name) {
+                    return Err(StoreError::Invalid(format!("Invalid variable name: {name}")));
+                }
+                if !names.insert(name) {
+                    return Err(StoreError::Invalid(format!("Duplicate variable: {name}")));
+                }
+            }
+        }
         let old = self.stored_environments(project_id)?.parts; // NotFound before touching the keychain
         let mut stored = Stored { envs: environments.clone(), parts: 0 };
         let mut secrets = Secrets::new();
@@ -317,9 +383,8 @@ impl Store {
                     }
                 }
                 Err(e) => {
-                    warning = Some(format!(
-                        "The system keychain is unavailable ({e}). Secret values were saved in the local database instead."
-                    ))
+                    warning =
+                        Some(format!("The system keychain is unavailable ({e}). Secret values were saved in the local database instead."))
                 }
             }
         }

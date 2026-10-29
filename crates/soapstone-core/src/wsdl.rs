@@ -27,6 +27,8 @@ pub enum Style {
 pub struct Operation {
     /// Binding local name, e.g. "CalculatorSoap12".
     pub binding: String,
+    /// Namespace of the binding; local names alone are not unique across imported WSDLs.
+    pub binding_namespace: String,
     pub name: String,
     pub soap_version: SoapVersion,
     pub style: Style,
@@ -94,7 +96,14 @@ impl Definition {
     }
 
     pub fn operation(&self, binding: &str, name: &str) -> Option<&Operation> {
+        if let Some((namespace, local)) = binding.strip_prefix('{').and_then(|b| b.split_once('}')) {
+            return self.operation_in(namespace, local, name);
+        }
         self.operations.iter().find(|o| o.binding == binding && o.name == name)
+    }
+
+    pub fn operation_in(&self, namespace: &str, binding: &str, name: &str) -> Option<&Operation> {
+        self.operations.iter().find(|o| o.binding_namespace == namespace && o.binding == binding && o.name == name)
     }
 
     /// The request SoapUI would generate for `op`: an envelope with `?` placeholders and guidance comments.
@@ -186,6 +195,7 @@ fn collect_operations(definitions: &[Node]) -> Vec<Operation> {
                     .collect();
                 operations.push(Operation {
                     binding: binding.attribute("name").unwrap_or("").to_string(),
+                    binding_namespace: binding_name.ns.clone(),
                     name: name.to_string(),
                     soap_version,
                     style,

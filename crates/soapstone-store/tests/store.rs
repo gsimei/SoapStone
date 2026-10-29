@@ -1,7 +1,9 @@
-use std::collections::HashMap;
 use soapstone_store::{Environment, Environments, Kind, Project, RequestOptions, Store, Variable, Vault, WsSecurity};
+use std::collections::HashMap;
 
-fn var(name: &str, value: &str) -> Variable { Variable { name: name.into(), value: value.into(), secret: false } }
+fn var(name: &str, value: &str) -> Variable {
+    Variable { name: name.into(), value: value.into(), secret: false }
+}
 fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
@@ -120,7 +122,39 @@ fn version_1_database_is_migrated() {
     assert_eq!((r.endpoint.as_str(), r.ws_security, r.options), ("http://x", WsSecurity::default(), RequestOptions::default()));
     drop(s);
     let version: i64 = rusqlite::Connection::open(&path).unwrap().pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn migration_preserves_request_ids_and_new_requests_use_the_cached_sample() {
+    let path = std::env::temp_dir().join(format!("soapstone-cache-migration-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(SCHEMA_V1).unwrap();
+    let fixture = format!("{}/../soapstone-core/tests/fixtures/features/service.wsdl", env!("CARGO_MANIFEST_DIR"));
+    let docs = soapstone_core::fetch_all(&soapstone_core::to_url(&fixture).unwrap()).unwrap();
+    let json: Vec<_> = docs.iter().map(|d| serde_json::json!({"url": d.url, "content": d.content})).collect();
+    conn.execute("UPDATE services SET documents = ?1", [serde_json::to_string(&json).unwrap()]).unwrap();
+    conn.execute("UPDATE operations SET binding = 'FeaturesSoap', name = 'GetPerson'", []).unwrap();
+    drop(conn);
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.request(1).unwrap().body, "<b/>");
+    assert_eq!(s.request(1).unwrap().binding_namespace, "urn:features");
+    let tree = s.tree(1).unwrap();
+    assert_eq!(tree[0].operations.len(), 2);
+    // If create_request reparses WSDLs, this deliberately invalid cache would make it fail.
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("UPDATE services SET documents = '[]'", []).unwrap();
+    let id = s.create_request(1).unwrap();
+    assert!(s.request(id).unwrap().body.contains("GetPerson"));
+    conn.execute("UPDATE requests SET last_response = 'invalid-json' WHERE id = 1", []).unwrap();
+    assert!(s.prepare_send(1).is_ok()); // sending does not read or deserialize the previous response
+    assert!(s.duplicate_request(1).is_ok());
+    s.delete(Kind::Service, 1).unwrap();
+    assert!(s.request(1).is_err());
+    drop(s);
+    drop(conn);
     std::fs::remove_file(&path).unwrap();
 }
 

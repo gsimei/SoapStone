@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import type { Environments, Variable } from "./api";
 import { KeyValueTable } from "./KeyValueTable";
-import { fromDraft, plain, removeEnvironment, toDraft } from "./logic";
+import { fromDraft, plain, removeEnvironment, toDraft, validVariableName } from "./logic";
 
 /** Edits a local copy of the project's environments; nothing is saved until Save. */
 export function EnvironmentDialog(props: { initial: Environments; onSave(environments: Environments): void; onClose(): void }) {
@@ -16,10 +16,17 @@ export function EnvironmentDialog(props: { initial: Environments; onSave(environ
 
   const names = envs.environments.map((e) => e.name.trim());
   const duplicate = names.find((n, i) => n && names.indexOf(n) !== i);
+  const invalidVariable = [envs.base, ...envs.environments.map((e) => e.variables)].flat().find((v) => v.name.trim() && !validVariableName(v.name.trim()));
+  const duplicateVariable = [envs.base, ...envs.environments.map((e) => e.variables)].some((vars) => {
+    const names = vars.map((v) => v.name.trim()).filter(Boolean);
+    return new Set(names).size !== names.length;
+  });
   const problem = names.some((n) => !n)
     ? "Every environment needs a name."
     : duplicate
       ? `Two environments are named "${duplicate}".`
+      : invalidVariable ? `Invalid variable name: ${invalidVariable.name}. Use letters, digits, _, . or -; start with a letter or _.`
+      : duplicateVariable ? "Variable names must be unique within each environment."
       : null;
   const env = selected >= 0 ? envs.environments[selected] : null;
 

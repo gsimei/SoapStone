@@ -9,10 +9,10 @@ mod xml;
 use serde::{Deserialize, Serialize};
 
 pub use reqwest::Client;
-pub use send::{client, send};
+pub use send::{client, prepare, send};
 pub use soapstone_core::SoapVersion;
-pub use vars::render;
-pub use xml::{decode_body, fault_string, pretty_xml};
+pub use vars::{escape_xml, render, render_xml};
+pub use xml::{decode_body, fault_string, password_ranges, pretty_xml, validate_xml};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +142,8 @@ pub enum SendError {
     MissingVariables(Vec<String>),
     #[error("Invalid endpoint URL: \"{0}\"")]
     InvalidUrl(String),
+    #[error("Invalid XML: {0}")]
+    InvalidXml(String),
     #[error("{0}")]
     Http(String),
     #[error("Client certificate: {0}")]

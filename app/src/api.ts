@@ -26,7 +26,7 @@ export type ServiceSource = { projectId: number; url: string; fetch: FetchSettin
 export type Environment = { name: string; variables: Variable[] };
 export type Environments = { base: Variable[]; environments: Environment[]; active: string | null };
 export type RequestNode = { id: number; name: string };
-export type OperationNode = { id: number; binding: string; name: string; orphan: boolean; requests: RequestNode[] };
+export type OperationNode = { id: number; binding: string; bindingNamespace?: string; name: string; orphan: boolean; requests: RequestNode[] };
 export type ServiceNode = { id: number; name: string; operations: OperationNode[] };
 export type HttpResponse = {
   status: number;
@@ -43,6 +43,7 @@ export type Request = {
   name: string;
   operation: string;
   binding: string;
+  bindingNamespace: string;
   soapVersion: "1.1" | "1.2";
   soapAction: string | null;
   endpoint: string;
@@ -56,6 +57,10 @@ export type Request = {
 export type RequestEdit = Pick<Request, "id" | "endpoint" | "body" | "headers" | "auth" | "wsSecurity" | "options">;
 export type Kind = "project" | "service" | "request";
 export type ImportReport = { projectId: number; services: number; requests: number; notes: string[] };
+export type ActiveRun = { requestId: number; runId: string };
+export type Preview = { endpoint: string; headers: Header[]; body: string };
+export type HistoryEntry = { id: number; createdAt: string; status: number; timeMs: number; size: number };
+export type TestStep = { requestId: number; expectedStatus: number | null; notFault: boolean; xpath: string; expectedValue: string | null; extractVariable: string };
 
 export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
@@ -72,8 +77,20 @@ export const api = {
   getRequest: (id: number) => invoke<Request>("get_request", { id }),
   saveRequest: (edit: RequestEdit) => invoke<void>("save_request", { edit }),
   createRequest: (operationId: number) => invoke<number>("create_request", { operationId }),
-  send: (edit: RequestEdit) => invoke<HttpResponse>("send_request", { edit }),
-  cancelSend: (requestId: number) => invoke<void>("cancel_send", { requestId }),
+  send: (edit: RequestEdit, runId: string, variables?: Record<string, string>) => invoke<HttpResponse>("send_request", { edit, runId, variables }),
+  cancelSend: (requestId: number, runId: string) => invoke<void>("cancel_send", { requestId, runId }),
+  activeRuns: () => invoke<ActiveRun[]>("active_runs"),
+  preview: (edit: RequestEdit) => invoke<Preview>("preview_request", { edit }),
+  formatXml: (xml: string) => invoke<string>("format_xml", { xml }),
+  sample: (id: number) => invoke<string>("request_sample", { id }),
+  duplicateRequest: (id: number) => invoke<number>("duplicate_request", { id }),
+  history: (id: number) => invoke<HistoryEntry[]>("request_history", { id }),
+  historyResponse: (id: number) => invoke<HttpResponse>("history_response", { id }),
+  clearHistory: (id: number) => invoke<void>("clear_history", { id }),
+  getTestPlan: (projectId: number) => invoke<TestStep[]>("get_test_plan", { projectId }),
+  saveTestPlan: (projectId: number, steps: TestStep[]) => invoke<void>("save_test_plan", { projectId, steps }),
+  exportProject: (projectId: number, path: string) => invoke<void>("export_project", { projectId, path }),
+  importProject: (path: string) => invoke<number>("import_project", { path }),
   /** `reveal`: secret values from the system keychain (may ask the user); otherwise they are empty. */
   getEnvironments: (projectId: number, reveal = false) => invoke<Environments>("get_environments", { projectId, reveal }),
   /** Resolves to a warning when secrets could not go to the system keychain. */
