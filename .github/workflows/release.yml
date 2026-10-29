@@ -1,0 +1,60 @@
+name: Release
+
+# Builds unsigned installers and attaches them to a draft release. Publish the draft by hand.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target aarch64-apple-darwin
+            rust-target: aarch64-apple-darwin
+          - os: macos-latest
+            args: --target x86_64-apple-darwin
+            rust-target: x86_64-apple-darwin
+          - os: windows-latest
+            args: ''
+            rust-target: ''
+          - os: ubuntu-22.04
+            args: ''
+            rust-target: ''
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix app ci
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          args: ${{ matrix.args }}
+          tagName: v__VERSION__
+          releaseName: Soapstone v__VERSION__
+          releaseDraft: true
+          prerelease: false
+          releaseBody: |
+            Unsigned builds. The first time you open Soapstone:
+            - **macOS:** open the `.dmg` (Apple Silicon: `aarch64`; Intel: `x64`) and drag Soapstone to Applications. Open it once; when macOS refuses, go to System Settings → Privacy & Security → "Open Anyway". If macOS says the app is damaged, run `xattr -dr com.apple.quarantine /Applications/Soapstone.app`.
+            - **Windows:** run the `.msi` or `-setup.exe`. If SmartScreen appears, choose "More info" → "Run anyway".
+            - **Linux:** `sudo apt install ./Soapstone_*.deb`, or `chmod +x Soapstone_*.AppImage` and run it.

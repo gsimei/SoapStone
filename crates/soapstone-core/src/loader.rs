@@ -56,9 +56,31 @@ pub fn to_url(input: &str) -> Result<Url, LoadError> {
     Url::from_file_path(&path).map_err(|()| fetch_err(input, "not a usable file path"))
 }
 
+/// How documents are downloaded over HTTP(S).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FetchOptions {
+    /// Basic credentials, sent only to the root document's origin (scheme, host and port).
+    pub username: String,
+    pub password: String,
+    /// Accept any server certificate.
+    pub insecure: bool,
+}
+
+/// The HTTP client, built on first use, and what every request needs to know.
+struct Http<'a> {
+    client: Option<Client>,
+    origin: url::Origin,
+    options: &'a FetchOptions,
+}
+
 /// The root document first, then every imported or included document in discovery order, each once.
 pub fn fetch_all(root: &Url) -> Result<Vec<Document>, LoadError> {
-    let mut http = None;
+    fetch_all_with(root, &FetchOptions::default())
+}
+
+/// `fetch_all` with credentials and TLS settings.
+pub fn fetch_all_with(root: &Url, options: &FetchOptions) -> Result<Vec<Document>, LoadError> {
+    let mut http = Http { client: None, origin: root.origin(), options };
     let (root, content, refs) = load_root(&mut http, root)?;
     let mut seen = HashSet::from([root.to_string()]);
     let mut queue = VecDeque::new();
@@ -77,7 +99,7 @@ pub fn fetch_all(root: &Url) -> Result<Vec<Document>, LoadError> {
 /// (CXF, PHP SoapServer); then ask again with `?wsdl`, the way people type it in SoapUI. If that fails
 /// too, report the first error: it names the URL the user gave. Unreachable hosts are not retried,
 /// so a timeout is never paid twice.
-fn load_root(http: &mut Option<Client>, url: &Url) -> Result<(Url, String, Vec<String>), LoadError> {
+fn load_root(http: &mut Http, url: &Url) -> Result<(Url, String, Vec<String>), LoadError> {
     let error = match fetch_bytes(http, url)?.and_then(|bytes| wsdl_root(url, &bytes)) {
         Ok((content, refs)) => return Ok((url.clone(), content, refs)),
         Err(e) => e,
@@ -153,22 +175,28 @@ fn scan(url: &str, content: &str) -> Result<(bool, Vec<String>), LoadError> {
     Ok((is_wsdl, refs))
 }
 
-fn fetch(http: &mut Option<Client>, url: &Url) -> Result<String, LoadError> {
+fn fetch(http: &mut Http, url: &Url) -> Result<String, LoadError> {
     decode(&fetch_bytes(http, url)??, url.as_str())
 }
 
 /// Outer error: the document could not be reached. Inner error: the server answered with an error status.
-fn fetch_bytes(http: &mut Option<Client>, url: &Url) -> Result<Result<Vec<u8>, LoadError>, LoadError> {
+fn fetch_bytes(http: &mut Http, url: &Url) -> Result<Result<Vec<u8>, LoadError>, LoadError> {
     match url.scheme() {
         "file" => {
             let path = url.to_file_path().map_err(|()| fetch_err(url.as_str(), "not a usable file path"))?;
             Ok(Ok(std::fs::read(path).map_err(|e| fetch_err(url.as_str(), e))?))
         }
         "http" | "https" => {
-            if http.is_none() {
-                *http = Some(Client::builder().timeout(TIMEOUT).build().map_err(|e| fetch_err(url.as_str(), e))?);
+            let options = http.options;
+            if http.client.is_none() {
+                let client = Client::builder().timeout(TIMEOUT).danger_accept_invalid_certs(options.insecure).build();
+                http.client = Some(client.map_err(|e| fetch_err(url.as_str(), e))?);
             }
-            let response = http.as_ref().unwrap().get(url.clone()).send().map_err(|e| fetch_err(url.as_str(), e))?;
+            let mut request = http.client.as_ref().unwrap().get(url.clone());
+            if !options.username.is_empty() && url.origin() == http.origin {
+                request = request.basic_auth(&options.username, Some(&options.password));
+            }
+            let response = request.send().map_err(|e| fetch_err(url.as_str(), e))?;
             if !response.status().is_success() {
                 return Ok(Err(fetch_err(url.as_str(), format!("HTTP {}", response.status()))));
             }

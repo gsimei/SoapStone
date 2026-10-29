@@ -11,3 +11,6 @@ roxmltree = "0.21"
 url = "2"
 reqwest = { version = "0.13", features = ["blocking"] }
 thiserror = "2"
+
+[dev-dependencies]
+rustls = "0.23"
